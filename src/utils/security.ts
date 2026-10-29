@@ -56,7 +56,7 @@ export function detectPromptInjection(input: string): {
   // Adversarial jailbreak patterns
   const injectionPatterns: { pattern: RegExp; reason: string }[] = [
     {
-      pattern: /ignore\s+(all\s+)?previous\s+(instructions|prompts|rules)/i,
+      pattern: /ignore\s+((all\s+)?previous\s+)?(instructions|prompts|rules)/i,
       reason: 'Attempted to override system instructions',
     },
     {
@@ -139,6 +139,14 @@ export function validateEventContext(
   ctx: Partial<EventContext>
 ): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
+
+  // Event type validation
+  if (ctx.eventType !== undefined) {
+    const validTypes = ['wedding', 'birthday', 'community'];
+    if (!validTypes.includes(ctx.eventType)) {
+      errors.push('Event type must be one of: wedding, birthday, community');
+    }
+  }
 
   // Budget validation
   if (ctx.totalBudget !== undefined) {

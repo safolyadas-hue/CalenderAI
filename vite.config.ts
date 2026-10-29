@@ -43,4 +43,9 @@ function calenderAiLocalBackend(): Plugin {
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), calenderAiLocalBackend()],
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/test/setup.ts'],
+  },
 });

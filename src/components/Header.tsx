@@ -81,7 +81,7 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           {/* Vertical Switcher Pills */}
-          <div className="flex items-center gap-1.5 p-1 bg-slate-100/90 rounded-xl border border-slate-200/80 overflow-x-auto">
+          <nav aria-label="Event Verticals" className="flex items-center gap-1.5 p-1 bg-slate-100/90 rounded-xl border border-slate-200/80 overflow-x-auto">
             {(Object.keys(verticalConfig) as EventType[]).map((type) => {
               const config = verticalConfig[type];
               const Icon = config.icon;
@@ -103,7 +103,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </button>
               );
             })}
-          </div>
+          </nav>
 
           {/* Quick Actions & Evaluator Tools */}
           <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">

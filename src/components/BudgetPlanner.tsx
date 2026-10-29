@@ -99,7 +99,14 @@ export const BudgetPlanner: React.FC<BudgetPlannerProps> = ({
           <span>Allocation Distribution</span>
           <span>100% of {context.currency} {context.totalBudget.toLocaleString()}</span>
         </div>
-        <div className="h-3 w-full rounded-full bg-slate-100 flex overflow-hidden shadow-inner">
+        <div
+          role="progressbar"
+          aria-valuenow={100}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label="Budget Allocation Distribution"
+          className="h-3 w-full rounded-full bg-slate-100 flex overflow-hidden shadow-inner"
+        >
           {categories.map((cat, i) => (
             <div
               key={cat.id}
