@@ -52,41 +52,51 @@ async function callGemini(
 ): Promise<string | null> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+  const runAttempt = async (useJsonMime: boolean): Promise<string | null> => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemInstruction }] },
-        contents: [{ parts: [{ text: userPrompt }] }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 2048,
-          responseMimeType: 'application/json',
+      const generationConfig: Record<string, unknown> = {
+        temperature: 0.7,
+        maxOutputTokens: 2048,
+      };
+      if (useJsonMime) {
+        generationConfig.responseMimeType = 'application/json';
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
         },
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemInstruction }] },
+          contents: [{ parts: [{ text: userPrompt }] }],
+          generationConfig,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      // 429 = rate limit, try next model
-      if (response.status === 429) return null;
+      if (!response.ok) {
+        // If 400 with JSON mime, retry once without JSON mime constraint
+        if (useJsonMime && response.status === 400) {
+          return runAttempt(false);
+        }
+        return null;
+      }
+
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      return typeof text === 'string' && text.trim().length > 0 ? text : null;
+    } catch {
       return null;
     }
+  };
 
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    return typeof text === 'string' ? text : null;
-  } catch {
-    return null;
-  }
+  return runAttempt(true);
 }
 
 async function callGeminiWithCascade(
@@ -95,7 +105,7 @@ async function callGeminiWithCascade(
   systemInstruction: string,
   userPrompt: string
 ): Promise<{ text: string; model: string } | null> {
-  // Try preferred model first, then cascade
+  // Try preferred model first, then cascade across all free-tier models
   const modelsToTry = [preferredModel, ...MODEL_CASCADE.filter((m) => m !== preferredModel)];
 
   for (const model of modelsToTry) {
@@ -124,14 +134,18 @@ Each idea MUST have these fields:
 
 Respond ONLY with a JSON object: {"ideas": [...]}`;
 
-const COPILOT_SYSTEM_INSTRUCTION = `You are CalenderAI Co-Pilot, an expert event planning advisor.
-Given the user's event context and question, provide a specific, actionable response.
+const COPILOT_SYSTEM_INSTRUCTION = `You are CalenderAI Co-Pilot, an expert AI event planning assistant and creative advisor.
+You help organize weddings, birthdays, community milestones, budgets, timelines, vendor contracts, as well as creative and general requests (including writing haikus, poems, toasts, speeches, greetings, theme concepts, jokes, or invitations).
 
-Your response MUST be a JSON object with:
-- "reply": a detailed 3-5 sentence strategic response addressing their specific question using their exact budget, guest count, event type, and setting
-- "suggestedActions": an array of 3 short follow-up action strings
+Directly and creatively answer the user's prompt:
+- If the user asks a creative question (e.g., write a haiku, poem, toast, speech, greeting, or joke), fulfill the creative request completely with high flair, incorporating their event context when appropriate.
+- If the user asks a strategic or logistical planning question, provide actionable advice tailored to their exact budget, guest count, event type, setting, and timeline.
 
-Respond ONLY with valid JSON: {"reply": "...", "suggestedActions": ["...", "...", "..."]}`;
+Your response MUST be in JSON format:
+{
+  "reply": "Your complete, beautifully formatted response (support markdown formatting, verses, bullet points, etc.)",
+  "suggestedActions": ["3 short, relevant follow-up actions or questions"]
+}`;
 
 // ─── Server-Side Contextual CoPilot Fallback ──────────────────────────
 
@@ -318,9 +332,14 @@ Dietary Preferences: ${(safeContext.dietaryPreferences || []).join(', ') || 'Non
 Notes: ${safeContext.customNotes || 'None'}`;
 
       const geminiResult = await callGeminiWithCascade(apiKey, preferredModel, IDEAS_SYSTEM_INSTRUCTION, contextPrompt);
-      if (geminiResult) {
+      if (geminiResult && geminiResult.text) {
         try {
-          const parsed = JSON.parse(geminiResult.text);
+          const cleaned = geminiResult.text
+            .replace(/^```json\s*/i, '')
+            .replace(/^```\s*/i, '')
+            .replace(/\s*```$/i, '')
+            .trim();
+          const parsed = JSON.parse(cleaned);
           if (Array.isArray(parsed.ideas) && parsed.ideas.length > 0) {
             return jsonResponse(200, {
               ideas: parsed.ideas,
@@ -330,7 +349,7 @@ Notes: ${safeContext.customNotes || 'None'}`;
             });
           }
         } catch {
-          // Gemini returned invalid JSON, fall through to contextual engine
+          // Gemini returned non-JSON ideas, fall through to contextual engine
         }
       }
     }
@@ -349,39 +368,75 @@ Notes: ${safeContext.customNotes || 'None'}`;
       return jsonResponse(400, { error: 'Missing userPrompt for copilot_query action.' });
     }
 
-    // Try Gemini first
+    // Try Gemini live model cascade if API key is provided
     if (apiKey) {
-      const contextPrompt = `User's Event Context:
-- Event: ${safeContext.eventType} — "${safeContext.title}"
-- Budget: ${safeContext.currency} ${safeContext.totalBudget} for ${safeContext.guestCount} guests
-- Setting: ${safeContext.setting}, City Tier: ${safeContext.cityTier}
-- Theme: ${safeContext.culturalTheme || 'Not specified'}
-- Dietary: ${(safeContext.dietaryPreferences || []).join(', ') || 'None'}
-- Efficiency Score: ${planSummary?.efficiencyScore ?? 'N/A'}/100
+      const contextPrompt = `User Prompt: ${safePrompt}
+
+Event Context Reference:
+- Event Type: ${safeContext.eventType} — "${safeContext.title}"
+- Total Budget: ${safeContext.currency} ${safeContext.totalBudget} for ${safeContext.guestCount} guests
+- Venue Setting: ${safeContext.setting}, City Tier: ${safeContext.cityTier}
+- Cultural Theme: ${safeContext.culturalTheme || 'Not specified'}
+- Dietary Preferences: ${(safeContext.dietaryPreferences || []).join(', ') || 'None'}
+- Feasibility Score: ${planSummary?.efficiencyScore ?? 'N/A'}/100
 - Days Until Event: ${planSummary?.daysUntilEvent ?? 'N/A'}
 
-User Question: ${safePrompt}`;
+Instruction: Provide a direct, complete, and engaging response to the User Prompt above.`;
 
       const geminiResult = await callGeminiWithCascade(apiKey, preferredModel, COPILOT_SYSTEM_INSTRUCTION, contextPrompt);
-      if (geminiResult) {
+      if (geminiResult && geminiResult.text) {
+        let reply = '';
+        let suggestedActions: string[] = ['Ask a follow-up question', 'Explore more ideas', 'Save to event notes'];
+
         try {
-          const parsed = JSON.parse(geminiResult.text);
-          if (parsed.reply) {
-            return jsonResponse(200, {
-              reply: parsed.reply,
-              suggestedActions: Array.isArray(parsed.suggestedActions) ? parsed.suggestedActions : [],
-              source: 'netlify_serverless',
-              aiMode: 'gemini_live',
-              model: geminiResult.model,
-            });
+          const cleaned = geminiResult.text
+            .replace(/^```json\s*/i, '')
+            .replace(/^```\s*/i, '')
+            .replace(/\s*```$/i, '')
+            .trim();
+          const parsed = JSON.parse(cleaned);
+
+          if (typeof parsed === 'string') {
+            reply = parsed;
+          } else if (parsed && typeof parsed.reply === 'string') {
+            reply = parsed.reply;
+            if (Array.isArray(parsed.suggestedActions) && parsed.suggestedActions.length > 0) {
+              suggestedActions = parsed.suggestedActions.map((s: unknown) => String(s));
+            }
+          } else if (parsed && typeof parsed.response === 'string') {
+            reply = parsed.response;
+          } else if (parsed && typeof parsed.message === 'string') {
+            reply = parsed.message;
+          } else if (parsed && typeof parsed.text === 'string') {
+            reply = parsed.text;
+          } else if (parsed && typeof parsed.content === 'string') {
+            reply = parsed.content;
+          } else if (parsed && typeof parsed === 'object') {
+            const firstString = Object.values(parsed).find((v) => typeof v === 'string');
+            reply = firstString ? String(firstString) : cleaned;
           }
         } catch {
-          // Fall through to contextual engine
+          // If Gemini output was plain text (e.g. haiku, verse, or freeform response), use it directly!
+          reply = geminiResult.text
+            .replace(/^```json\s*/i, '')
+            .replace(/^```\s*/i, '')
+            .replace(/\s*```$/i, '')
+            .trim();
+        }
+
+        if (reply) {
+          return jsonResponse(200, {
+            reply,
+            suggestedActions,
+            source: 'netlify_serverless',
+            aiMode: 'gemini_live',
+            model: geminiResult.model,
+          });
         }
       }
     }
 
-    // Server-side contextual engine fallback
+    // Server-side contextual engine fallback (only when API key is missing or cascade fails)
     const result = generateServerCopilotReply(safeContext, safePrompt, planSummary);
     return jsonResponse(200, {
       ...result,

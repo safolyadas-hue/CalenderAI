@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+// Declare process for test environment
+declare const process: { env: Record<string, string | undefined> };
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleAIPlannerRequest } from '../../netlify/functions/ai-planner';
 import { PRESET_WEDDING, PRESET_BIRTHDAY, PRESET_COMMUNITY } from '../data/presets';
 
@@ -176,5 +179,146 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
     expect(limitedRes.statusCode).toBe(429);
     const body = JSON.parse(limitedRes.body);
     expect(body.error).toContain('Too Many Requests');
+  });
+
+  describe('Live Gemini Mode with GEMINI_API_KEY', () => {
+    const originalEnv = process.env;
+    const originalFetch = globalThis.fetch;
+
+    beforeEach(() => {
+      process.env = { ...originalEnv, GEMINI_API_KEY: 'test-fake-gemini-key-123' };
+    });
+
+    afterEach(() => {
+      process.env = originalEnv;
+      globalThis.fetch = originalFetch;
+    });
+
+    it('always sends user custom creative prompt (haiku) directly to Gemini cascade and preserves response', async () => {
+      const haikuText = 'Lanterns soft and bright,\nTwo hearts dance beneath the stars,\nLove begins tonight.';
+      
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      reply: haikuText,
+                      suggestedActions: ['Write another verse', 'Add to vows', 'Print on menu'],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      } as unknown as Response);
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_WEDDING,
+          userPrompt: 'Write a romantic wedding haiku for our outdoor evening ceremony',
+        }),
+        clientIp: '10.0.1.1',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('gemini_live');
+      expect(body.source).toBe('netlify_serverless');
+      expect(body.reply).toBe(haikuText);
+      expect(body.suggestedActions).toContain('Write another verse');
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+
+    it('preserves plain-text non-JSON responses from Gemini without falling back to static summary', async () => {
+      const plainHaiku = 'Petals in the wind,\nSpringtime celebration smiles,\nJoy fills every heart.';
+      
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: plainHaiku }],
+              },
+            },
+          ],
+        }),
+      } as unknown as Response);
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_BIRTHDAY,
+          userPrompt: 'Give me a quick haiku for birthday greetings',
+        }),
+        clientIp: '10.0.1.2',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('gemini_live');
+      expect(body.reply).toBe(plainHaiku);
+    });
+
+    it('cascades to next model if the primary model returns 429 rate limit', async () => {
+      let callCount = 0;
+      globalThis.fetch = vi.fn().mockImplementation(() => {
+        callCount++;
+        // First model (gemini-3.8-flash) returns 429
+        if (callCount === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 429,
+          } as unknown as Response);
+        }
+        // Second model in cascade returns success
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        reply: 'Successfully answered via fallback cascade model!',
+                        suggestedActions: ['Next step'],
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        } as unknown as Response);
+      });
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_COMMUNITY,
+          userPrompt: 'What permits are required for city park sound?',
+        }),
+        clientIp: '10.0.1.3',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('gemini_live');
+      expect(body.reply).toContain('fallback cascade');
+      expect(callCount).toBeGreaterThanOrEqual(2);
+    });
   });
 });
