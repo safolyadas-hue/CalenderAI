@@ -419,6 +419,7 @@ ${i.description}
                 context={context}
                 efficiencyScore={budgetComputation.efficiencyScore}
                 daysUntilEvent={daysUntilEvent}
+                onSourceUpdate={setEngineSource}
               />
             </div>
           )}

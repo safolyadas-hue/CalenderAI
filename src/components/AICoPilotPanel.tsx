@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { Bot, Send, ShieldCheck, Sparkles } from 'lucide-react';
 import type { CoPilotMessage, EventContext } from '../types/event';
-import { askAICoPilot } from '../services/aiClient';
+import { askAICoPilot, type EngineSource } from '../services/aiClient';
 
 interface AICoPilotPanelProps {
   context: EventContext;
   efficiencyScore: number;
   daysUntilEvent: number;
+  onSourceUpdate?: (source: EngineSource) => void;
 }
 
 const QUICK_PROMPTS = [
@@ -20,6 +21,7 @@ export const AICoPilotPanel: React.FC<AICoPilotPanelProps> = ({
   context,
   efficiencyScore,
   daysUntilEvent,
+  onSourceUpdate,
 }) => {
   const [messages, setMessages] = useState<CoPilotMessage[]>([
     {
@@ -49,6 +51,9 @@ export const AICoPilotPanel: React.FC<AICoPilotPanelProps> = ({
 
     try {
       const response = await askAICoPilot(context, cleanText, { efficiencyScore, daysUntilEvent });
+      if (response.source) {
+        onSourceUpdate?.(response.source);
+      }
       const assistantMsg: CoPilotMessage = {
         id: `asst_${Date.now()}`,
         role: 'assistant',

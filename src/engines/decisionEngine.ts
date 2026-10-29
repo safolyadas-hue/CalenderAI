@@ -641,6 +641,16 @@ export function generateContextualIdeas(
     whyItFitsContext: `Specifically designed for ${dietNote} preferences across ${guestCount} guests in a ${sizeNote} setting.`,
   });
 
+  ideas.push({
+    id: uid('idea'),
+    category: 'Food & Beverage',
+    title: `${culturalTheme || 'Artisanal'} Signature Drink & Mocktail Bar`,
+    description: `Curate two themed signature beverages (one specialty cocktail/punch, one handcrafted herbal mocktail) named after the hosts or celebration milestones, using seasonal local garnishes.`,
+    estimatedImpact: 'Elevates hospitality ambiance while controlling open-bar beverage costs by up to 20%',
+    costTier: 'low',
+    whyItFitsContext: `Complements the ${dietNote} menu and adds memorable branding for ${context.title}.`,
+  });
+
   // ── Guest Experience ─────────────────────────────────────────────────
 
   ideas.push({

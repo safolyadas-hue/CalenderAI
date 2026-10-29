@@ -84,6 +84,18 @@ export function detectPromptInjection(input: string): {
       reason: 'Attempted restriction bypass',
     },
     {
+      pattern: /system\s+override/i,
+      reason: 'Attempted system override pattern',
+    },
+    {
+      pattern: /bypass\s+(security|rules|restrictions|filters)/i,
+      reason: 'Attempted security bypass pattern',
+    },
+    {
+      pattern: /(print|output|dump|reveal|show)\s+(api[_\s]?key|credentials|secret|token)/i,
+      reason: 'Attempted credential extraction',
+    },
+    {
       pattern: /(\bDROP\s+TABLE\b|\bDELETE\s+FROM\b|\bINSERT\s+INTO\b|\bUNION\s+SELECT\b)/i,
       reason: 'SQL injection pattern detected',
     },
