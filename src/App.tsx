@@ -1,5 +1,13 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import type { EventContext, EventPlan, EventType, BudgetCategory, TimelineMilestone, VendorItem, PersonalizedIdea } from './types/event';
+import type {
+  EventContext,
+  EventPlan,
+  EventType,
+  BudgetCategory,
+  TimelineMilestone,
+  VendorItem,
+  PersonalizedIdea,
+} from './types/event';
 import { PRESET_WEDDING, PRESET_BIRTHDAY, PRESET_COMMUNITY } from './data/presets';
 import {
   calculateSmartBudget,
@@ -20,7 +28,45 @@ import { AICoPilotPanel } from './components/AICoPilotPanel';
 
 const STORAGE_KEY = 'calenderai_active_plan_v1';
 
-type ActiveTab = 'overview' | 'budget' | 'timeline' | 'vendors' | 'ideas_copilot' | 'all';
+type ActiveTab = 'overview' | 'budget' | 'timeline' | 'vendors' | 'ideas_copilot';
+
+const WORKSPACE_TABS: {
+  id: ActiveTab;
+  step: string;
+  label: string;
+  subtitle: string;
+}[] = [
+    {
+      id: 'overview',
+      step: '01',
+      label: 'Event Setup',
+      subtitle: 'Parameters & Theme',
+    },
+    {
+      id: 'budget',
+      step: '02',
+      label: 'Smart Budget',
+      subtitle: 'Allocation & Locks',
+    },
+    {
+      id: 'timeline',
+      step: '03',
+      label: 'Timeline & Sprint',
+      subtitle: 'Milestones & Urgency',
+    },
+    {
+      id: 'vendors',
+      step: '04',
+      label: 'Vendor Checklist',
+      subtitle: 'Quotes & Contracts',
+    },
+    {
+      id: 'ideas_copilot',
+      step: '05',
+      label: 'AI Studio & Co-Pilot',
+      subtitle: 'Gemini 3.8 Assistant',
+    },
+  ];
 
 export default function App() {
   // Load initial context safely from localStorage or default to Wedding preset
@@ -39,27 +85,42 @@ export default function App() {
     return PRESET_WEDDING;
   });
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>('all');
+  // Default to clean single-tab 'overview' view instead of stacking everything
+  const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
   const [isGeneratingIdeas, setIsGeneratingIdeas] = useState(false);
   const [engineSource, setEngineSource] = useState<EngineSource>('local_context_engine');
 
   // Decision Engine baseline computations
   const budgetComputation = useMemo(() => calculateSmartBudget(context), [context]);
 
-  const [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>(() => budgetComputation.categories);
-  const [timeline, setTimeline] = useState<TimelineMilestone[]>(() => generateDynamicTimeline(context));
-  const [vendors, setVendors] = useState<VendorItem[]>(() => generateVendorChecklist(context));
-  const [ideas, setIdeas] = useState<PersonalizedIdea[]>(() => generateContextualIdeas(context));
+  const [budgetCategories, setBudgetCategories] = useState<BudgetCategory[]>(
+    () => budgetComputation.categories
+  );
+  const [timeline, setTimeline] = useState<TimelineMilestone[]>(() =>
+    generateDynamicTimeline(context)
+  );
+  const [vendors, setVendors] = useState<VendorItem[]>(() =>
+    generateVendorChecklist(context)
+  );
+  const [ideas, setIdeas] = useState<PersonalizedIdea[]>(() =>
+    generateContextualIdeas(context)
+  );
 
-  // Sync budget when context changes (unless locked manually)
+  // Sync budget when context changes
   useEffect(() => {
     setBudgetCategories(budgetComputation.categories);
     setTimeline(generateDynamicTimeline(context));
     setVendors(generateVendorChecklist(context));
     setIdeas(generateContextualIdeas(context));
-  }, [context.eventType, context.eventDate, context.totalBudget, context.cityTier, context.setting]);
+  }, [
+    context.eventType,
+    context.eventDate,
+    context.totalBudget,
+    context.cityTier,
+    context.setting,
+  ]);
 
-  // Auto-sync engine source badge with Netlify AI Serverless on mount (run once, no duplicates)
+  // Auto-sync engine source badge with Netlify AI Serverless on mount (run once)
   const initialProbeDone = useRef(false);
   useEffect(() => {
     if (initialProbeDone.current) return;
@@ -127,6 +188,7 @@ export default function App() {
           pill: 'bg-indigo-600',
           text: 'text-indigo-600',
           border: 'border-indigo-200',
+          lightBg: 'bg-indigo-50 text-indigo-700 border-indigo-200',
         };
       case 'birthday':
         return {
@@ -134,6 +196,7 @@ export default function App() {
           pill: 'bg-rose-600',
           text: 'text-rose-600',
           border: 'border-rose-200',
+          lightBg: 'bg-rose-50 text-rose-700 border-rose-200',
         };
       case 'community':
         return {
@@ -141,6 +204,7 @@ export default function App() {
           pill: 'bg-emerald-600',
           text: 'text-emerald-600',
           border: 'border-emerald-200',
+          lightBg: 'bg-emerald-50 text-emerald-700 border-emerald-200',
         };
     }
   }, [context.eventType]);
@@ -156,8 +220,31 @@ export default function App() {
     setContext(preset);
   }, []);
 
+  const handleCreateCustomBlankEvent = useCallback(() => {
+    const sixtyDaysOut = new Date();
+    sixtyDaysOut.setDate(sixtyDaysOut.getDate() + 60);
+    const isoDate = sixtyDaysOut.toISOString().split('T')[0];
+
+    setContext({
+      id: `custom_${Date.now()}`,
+      title: 'My Custom Celebration',
+      eventType: context.eventType,
+      eventDate: isoDate,
+      guestCount: 150,
+      totalBudget: context.currency === 'INR' ? 500000 : 10000,
+      currency: context.currency,
+      cityTier: 'tier2',
+      setting: 'indoor',
+      culturalTheme: 'Modern Minimalist & Warm Lighting',
+      dietaryPreferences: ['Vegetarian', 'Custom Menu'],
+      priorityFocus: 'Guest Experience & Smooth Logistics',
+    });
+    setActiveTab('overview');
+  }, [context.eventType, context.currency]);
+
   const handleReset = useCallback(() => {
     setContext(PRESET_WEDDING);
+    setActiveTab('overview');
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch {
@@ -168,7 +255,9 @@ export default function App() {
   // Budget Handlers
   const handleUpdateCategoryAmount = useCallback(
     (categoryId: string, newAmount: number) => {
-      setBudgetCategories((prev) => rebalanceBudget(prev, context.totalBudget, categoryId, newAmount));
+      setBudgetCategories((prev) =>
+        rebalanceBudget(prev, context.totalBudget, categoryId, newAmount)
+      );
     },
     [context.totalBudget]
   );
@@ -209,11 +298,12 @@ export default function App() {
   );
 
   // Vendor Handlers
-  const handleUpdateVendorStatus = useCallback((id: string, status: VendorItem['status']) => {
-    setVendors((prev) =>
-      prev.map((v) => (v.id === id ? { ...v, status } : v))
-    );
-  }, []);
+  const handleUpdateVendorStatus = useCallback(
+    (id: string, status: VendorItem['status']) => {
+      setVendors((prev) => prev.map((v) => (v.id === id ? { ...v, status } : v)));
+    },
+    []
+  );
 
   const handleUpdateActualQuoted = useCallback((id: string, quoted: number) => {
     setVendors((prev) =>
@@ -221,19 +311,22 @@ export default function App() {
     );
   }, []);
 
-  const handleToggleContractItem = useCallback((vendorId: string, checklistId: string) => {
-    setVendors((prev) =>
-      prev.map((v) => {
-        if (v.id !== vendorId) return v;
-        return {
-          ...v,
-          contractChecklist: v.contractChecklist.map((c) =>
-            c.id === checklistId ? { ...c, checked: !c.checked } : c
-          ),
-        };
-      })
-    );
-  }, []);
+  const handleToggleContractItem = useCallback(
+    (vendorId: string, checklistId: string) => {
+      setVendors((prev) =>
+        prev.map((v) => {
+          if (v.id !== vendorId) return v;
+          return {
+            ...v,
+            contractChecklist: v.contractChecklist.map((c) =>
+              c.id === checklistId ? { ...c, checked: !c.checked } : c
+            ),
+          };
+        })
+      );
+    },
+    []
+  );
 
   const handleAddVendor = useCallback((vendor: Omit<VendorItem, 'id'>) => {
     const newV: VendorItem = {
@@ -260,7 +353,9 @@ export default function App() {
     (format: 'json' | 'md') => {
       const titleSlug = context.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       if (format === 'json') {
-        const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(activePlan, null, 2));
+        const dataStr =
+          'data:text/json;charset=utf-8,' +
+          encodeURIComponent(JSON.stringify(activePlan, null, 2));
         const downloadAnchor = document.createElement('a');
         downloadAnchor.setAttribute('href', dataStr);
         downloadAnchor.setAttribute('download', `${titleSlug}-plan.json`);
@@ -276,188 +371,396 @@ export default function App() {
 
 ---
 
-## 💰 Smart Budget Allocation
-${budgetCategories.map((c) => `- **${c.name}**: ${context.currency} ${c.allocatedAmount.toLocaleString()} (${c.percentage}%) [${c.priority.toUpperCase()}]${c.actualSpent ? ` | Actual Spent: ${context.currency} ${c.actualSpent.toLocaleString()}` : ''}`).join('\n')}
+## Smart Budget Allocation
+${budgetCategories
+            .map(
+              (c) =>
+                `- **${c.name}**: ${context.currency} ${c.allocatedAmount.toLocaleString()} (${c.percentage}%) [${c.priority.toUpperCase()}]${c.actualSpent
+                  ? ` | Actual Spent: ${context.currency} ${c.actualSpent.toLocaleString()}`
+                  : ''
+                }`
+            )
+            .join('\n')}
 
 ---
 
-## 🗓️ Planning Milestones
-${timeline.map((m) => `- [${m.completed ? 'x' : ' '}] **${m.dueDate}** (${m.daysBeforeEvent}d before): **${m.title}** [${m.phase}] - ${m.description}${m.dependencyWarning ? `\n  - ⚠️ *${m.dependencyWarning}*` : ''}`).join('\n')}
+## Planning Milestones
+${timeline
+            .map(
+              (m) =>
+                `- [${m.completed ? 'x' : ' '}] **${m.dueDate}** (${m.daysBeforeEvent}d before): **${m.title}** [${m.phase}] - ${m.description}${m.dependencyWarning ? `\n  - *Warning: ${m.dependencyWarning}*` : ''
+                }`
+            )
+            .join('\n')}
 
 ---
 
-## 🤝 Vendor Pipeline & Contracts
-${vendors.map((v) => `### ${v.roleName} (${v.category}) - Status: ${v.status.toUpperCase()}
-- **Est. Cost Range:** ${context.currency} ${v.estimatedCostMin.toLocaleString()} - ${context.currency} ${v.estimatedCostMax.toLocaleString()}
-${v.actualQuoted ? `- **Actual Quoted:** ${context.currency} ${v.actualQuoted.toLocaleString()}\n` : ''}- **Contract Checklist:**
-${v.contractChecklist.map((c) => `  - [${c.checked ? 'x' : ' '}] ${c.label}`).join('\n')}
-- **Vetting Questions:**
-${v.questionsToAsk.map((q) => `  - ${q}`).join('\n')}`).join('\n\n')}
+## Vendor & Compliance Checklist
+${vendors
+            .map(
+              (v) =>
+                `- **${v.category}** (${v.status.toUpperCase()}): Est. ${context.currency} ${v.estimatedCost.toLocaleString()}`
+            )
+            .join('\n')}
 
 ---
 
-## 💡 Personalized Creative Ideas
-${ideas.map((i) => `### ${i.title} (${i.category}) [${i.costTier.toUpperCase()} COST]
-${i.description}
-- **Impact:** ${i.estimatedImpact}
-- **Context Fit:** ${i.whyItFitsContext}`).join('\n\n')}
+## Personalized Ideas
+${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.estimatedCostImpact}]`).join('\n')}
 `;
         const dataStr = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
         const downloadAnchor = document.createElement('a');
         downloadAnchor.setAttribute('href', dataStr);
-        downloadAnchor.setAttribute('download', `${titleSlug}-checklist.md`);
+        downloadAnchor.setAttribute('download', `${titleSlug}-plan.md`);
         document.body.appendChild(downloadAnchor);
         downloadAnchor.click();
         downloadAnchor.remove();
       }
     },
-    [activePlan, context, budgetCategories, timeline, vendors, ideas, daysUntilEvent]
+    [activePlan, budgetCategories, context, daysUntilEvent, ideas, timeline, vendors]
   );
 
-  const tabs: { id: ActiveTab; label: string }[] = [
-    { id: 'all', label: 'All Modules' },
-    { id: 'overview', label: 'Overview & Context' },
-    { id: 'budget', label: 'Smart Budget' },
-    { id: 'timeline', label: 'Dynamic Timeline' },
-    { id: 'vendors', label: 'Vendor Checklist' },
-    { id: 'ideas_copilot', label: 'AI Ideas & Co-Pilot' },
-  ];
+  // Quick helper for step navigation
+  const currentTabIndex = WORKSPACE_TABS.findIndex((t) => t.id === activeTab);
+  const prevTab = currentTabIndex > 0 ? WORKSPACE_TABS[currentTabIndex - 1] : null;
+  const nextTab =
+    currentTabIndex < WORKSPACE_TABS.length - 1 ? WORKSPACE_TABS[currentTabIndex + 1] : null;
+
+  const completedTasksCount = timeline.filter((m) => m.completed).length;
+  const bookedVendorsCount = vendors.filter(
+    (v) => v.status === 'booked' || v.status === 'paid'
+  ).length;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col selection:bg-indigo-500 selection:text-white">
-      {/* Header */}
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
+      {/* WCAG 2.1 AA Skip Link */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-4 focus:py-2 focus:bg-indigo-600 focus:text-white focus:rounded-lg focus:shadow-lg"
+      >
+        Skip to main content
+      </a>
+
+      {/* Top Application Header */}
       <Header
-        currentType={context.eventType}
+        activeType={context.eventType}
         onSelectType={handleSelectType}
         onSelectPreset={handleSelectPreset}
         onExport={handleExport}
         onReset={handleReset}
         engineSource={engineSource}
-        activePlan={activePlan}
+        efficiencyScore={activePlan.efficiencyScore}
       />
 
-      {/* Main Content */}
-      <main id="main-content" tabIndex={-1} className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 focus:outline-none">
-        {/* Contextual Vertical Accent Banner */}
-        <div className={`p-4 rounded-2xl bg-gradient-to-r ${verticalAccent.banner} text-white shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3`}>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-white/20">
-                {context.eventType.toUpperCase()} PLANNER
-              </span>
-              <span className="text-xs font-semibold text-white/90">
-                {daysUntilEvent} Days Until Event
-              </span>
+      {/* Main Single-Tab Workspace */}
+      <main
+        id="main-content"
+        className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6"
+      >
+        {/* Compact Hero Banner + Custom Event Action */}
+        <section
+          aria-label="Active Event Summary"
+          className={`rounded-2xl bg-gradient-to-r ${verticalAccent.banner} text-white p-5 sm:p-6 shadow-md transition-all`}
+        >
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-white/20 backdrop-blur-xs">
+                  {context.eventType} Blueprint
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-black/20">
+                  {context.setting.toUpperCase()} • {context.cityTier.toUpperCase()}
+                </span>
+                {daysUntilEvent <= 30 && (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-400 text-slate-950">
+                    ⚡ Accelerated Sprint ({daysUntilEvent}d left)
+                  </span>
+                )}
+              </div>
+              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">
+                {context.title}
+              </h1>
+              <p className="text-xs sm:text-sm text-white/85 max-w-2xl">
+                Theme: <span className="font-semibold text-white">{context.culturalTheme}</span> •{' '}
+                Priority: <span className="font-semibold text-white">{context.priorityFocus}</span>
+              </p>
             </div>
-            <h2 className="text-lg sm:text-xl font-bold mt-1 tracking-tight">
-              {context.title}
-            </h2>
+
+            {/* Quick Action Buttons */}
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleCreateCustomBlankEvent}
+                className="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-white text-slate-900 hover:bg-slate-100 shadow-xs transition cursor-pointer"
+              >
+                ✨ Start Custom Blank Event
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('ideas_copilot')}
+                className="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-white/15 hover:bg-white/25 text-white border border-white/25 transition cursor-pointer"
+              >
+                💬 Ask AI Co-Pilot
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2 self-start sm:self-auto">
-            <div className="px-3 py-1.5 rounded-xl bg-white/10 backdrop-blur-sm border border-white/20 text-right">
-              <span className="text-[10px] uppercase font-bold text-white/80 block">Budget</span>
-              <span className="text-sm font-bold text-white">
+
+          {/* 4-Metric KPI Strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-4 border-t border-white/15">
+            <div className="bg-black/15 rounded-xl px-3.5 py-2.5">
+              <p className="text-[11px] uppercase tracking-wider text-white/70">Total Budget</p>
+              <p className="text-sm sm:text-base font-bold mt-0.5">
                 {context.currency} {context.totalBudget.toLocaleString()}
-              </span>
+              </p>
+              <p className="text-[11px] text-white/75">
+                {context.currency} {budgetComputation.perGuestCost.toLocaleString()} / guest
+              </p>
             </div>
-            <div className="px-3 py-1.5 rounded-xl bg-white/10 backdrop-blur-sm border border-white/20 text-right">
-              <span className="text-[10px] uppercase font-bold text-white/80 block">Efficiency</span>
-              <span className="text-sm font-bold text-white">
-                {budgetComputation.efficiencyScore}/100
-              </span>
+
+            <div className="bg-black/15 rounded-xl px-3.5 py-2.5">
+              <p className="text-[11px] uppercase tracking-wider text-white/70">Guest Capacity</p>
+              <p className="text-sm sm:text-base font-bold mt-0.5">{context.guestCount} Guests</p>
+              <p className="text-[11px] text-white/75">Target: {context.eventDate}</p>
+            </div>
+
+            <div className="bg-black/15 rounded-xl px-3.5 py-2.5">
+              <p className="text-[11px] uppercase tracking-wider text-white/70">Milestone Progress</p>
+              <p className="text-sm sm:text-base font-bold mt-0.5">
+                {completedTasksCount} / {timeline.length} Done
+              </p>
+              <div
+                role="progressbar"
+                aria-valuenow={
+                  timeline.length > 0
+                    ? Math.round((completedTasksCount / timeline.length) * 100)
+                    : 0
+                }
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Timeline completion progress"
+                className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden mt-1.5"
+              >
+                <div
+                  className="h-full bg-emerald-400 transition-all duration-300"
+                  style={{
+                    width: `${timeline.length > 0
+                        ? Math.round((completedTasksCount / timeline.length) * 100)
+                        : 0
+                      }%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="bg-black/15 rounded-xl px-3.5 py-2.5">
+              <p className="text-[11px] uppercase tracking-wider text-white/70">Vendors Locked</p>
+              <p className="text-sm sm:text-base font-bold mt-0.5">
+                {bookedVendorsCount} / {vendors.length} Booked
+              </p>
+              <p className="text-[11px] text-white/75">
+                Efficiency: {activePlan.efficiencyScore}/100
+              </p>
             </div>
           </div>
-        </div>
+        </section>
 
-        {/* Navigation Tabs Bar */}
-        <div className="flex items-center gap-1.5 p-1 bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                activeTab === tab.id
-                  ? 'bg-slate-900 text-white shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        {/* Clean 5-Tab Segmented Navigation Bar */}
+        <nav
+          aria-label="Workspace Modules"
+          className="bg-white p-2 rounded-2xl border border-slate-200 shadow-xs grid grid-cols-2 sm:grid-cols-5 gap-2"
+        >
+          {WORKSPACE_TABS.map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                aria-current={isActive ? 'page' : undefined}
+                className={`flex flex-col items-start px-3.5 py-2.5 rounded-xl text-left transition-all cursor-pointer border ${isActive
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                    : 'bg-slate-50/70 text-slate-700 border-transparent hover:bg-slate-100 hover:border-slate-200'
+                  }`}
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span
+                    className={`text-[11px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${isActive ? 'bg-white/20 text-white' : 'bg-slate-200/80 text-slate-600'
+                      }`}
+                  >
+                    Step {tab.step}
+                  </span>
+                  {isActive && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" aria-hidden="true" />
+                  )}
+                </div>
+                <span className="text-sm font-bold mt-1.5 leading-snug">{tab.label}</span>
+                <span
+                  className={`text-[11px] mt-0.5 line-clamp-1 ${isActive ? 'text-slate-300' : 'text-slate-500'
+                    }`}
+                >
+                  {tab.subtitle}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
 
-        {/* Modules Rendering */}
-        <div className="space-y-6">
-          {(activeTab === 'all' || activeTab === 'overview') && (
-            <ContextConfigurator
-              context={context}
-              onChange={setContext}
-              efficiencyScore={budgetComputation.efficiencyScore}
-              riskAlerts={budgetComputation.riskAlerts}
-            />
+        {/* Active Risk Alerts Strip (Only shows if there are active warnings) */}
+        {budgetComputation.riskAlerts.length > 0 && activeTab !== 'ideas_copilot' && (
+          <div
+            role="region"
+            aria-label="Planning Risk Alerts"
+            className="bg-amber-50 border border-amber-200/80 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
+          >
+            <div className="text-xs text-amber-900 space-y-1">
+              <p className="font-bold uppercase tracking-wider text-amber-800">
+                ⚠️ Active Decision Engine Advisories ({budgetComputation.riskAlerts.length})
+              </p>
+              <ul className="list-disc list-inside space-y-0.5">
+                {budgetComputation.riskAlerts.slice(0, 2).map((alert, idx) => (
+                  <li key={idx}>{alert}</li>
+                ))}
+              </ul>
+            </div>
+            {activeTab !== 'budget' && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('budget')}
+                className="self-start sm:self-center shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-900 text-white hover:bg-amber-800 transition cursor-pointer"
+              >
+                Inspect in Budget →
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Strictly Single-Tab Content Area (Zero Clutter) */}
+        <div className="min-h-[480px]">
+          {activeTab === 'overview' && (
+            <div className="max-w-4xl mx-auto">
+              <ContextConfigurator context={context} onChange={setContext} />
+            </div>
           )}
 
-          {(activeTab === 'all' || activeTab === 'budget') && (
-            <BudgetPlanner
-              context={context}
-              categories={budgetCategories}
-              onUpdateCategoryAmount={handleUpdateCategoryAmount}
-              onToggleLock={handleToggleLock}
-              onUpdateActualSpent={handleUpdateActualSpent}
-              onResetToSmartDefaults={handleResetToSmartDefaults}
-            />
-          )}
-
-          {(activeTab === 'all' || activeTab === 'timeline') && (
-            <TimelineScheduler
-              milestones={timeline}
-              daysUntilEvent={daysUntilEvent}
-              onToggleComplete={handleToggleComplete}
-              onAddMilestone={handleAddMilestone}
-            />
-          )}
-
-          {(activeTab === 'all' || activeTab === 'vendors') && (
-            <VendorChecklist
-              vendors={vendors}
-              currency={context.currency}
-              onUpdateVendorStatus={handleUpdateVendorStatus}
-              onUpdateActualQuoted={handleUpdateActualQuoted}
-              onToggleContractItem={handleToggleContractItem}
-              onAddVendor={handleAddVendor}
-            />
-          )}
-
-          {(activeTab === 'all' || activeTab === 'ideas_copilot') && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <PersonalizedIdeasHub
-                ideas={ideas}
-                onRegenerate={handleRegenerateIdeas}
-                isLoading={isGeneratingIdeas}
-              />
-              <AICoPilotPanel
-                context={context}
-                efficiencyScore={budgetComputation.efficiencyScore}
-                daysUntilEvent={daysUntilEvent}
-                onSourceUpdate={setEngineSource}
+          {activeTab === 'budget' && (
+            <div className="max-w-5xl mx-auto">
+              <BudgetPlanner
+                categories={budgetCategories}
+                totalBudget={context.totalBudget}
+                guestCount={context.guestCount}
+                currency={context.currency}
+                riskAlerts={budgetComputation.riskAlerts}
+                onUpdateCategoryAmount={handleUpdateCategoryAmount}
+                onToggleLock={handleToggleLock}
+                onUpdateActualSpent={handleUpdateActualSpent}
+                onResetToSmartDefaults={handleResetToSmartDefaults}
               />
             </div>
           )}
+
+          {activeTab === 'timeline' && (
+            <div className="max-w-5xl mx-auto">
+              <TimelineScheduler
+                milestones={timeline}
+                daysUntilEvent={daysUntilEvent}
+                onToggleComplete={handleToggleComplete}
+                onAddMilestone={handleAddMilestone}
+              />
+            </div>
+          )}
+
+          {activeTab === 'vendors' && (
+            <div className="max-w-5xl mx-auto">
+              <VendorChecklist
+                vendors={vendors}
+                currency={context.currency}
+                onUpdateStatus={handleUpdateVendorStatus}
+                onUpdateActualQuoted={handleUpdateActualQuoted}
+                onToggleContractItem={handleToggleContractItem}
+                onAddVendor={handleAddVendor}
+              />
+            </div>
+          )}
+
+          {activeTab === 'ideas_copilot' && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              <div className="lg:col-span-7">
+                <PersonalizedIdeasHub
+                  ideas={ideas}
+                  context={context}
+                  isGenerating={isGeneratingIdeas}
+                  engineSource={engineSource}
+                  onRegenerateWithAI={handleRegenerateIdeas}
+                />
+              </div>
+              <div className="lg:col-span-5 lg:sticky lg:top-6">
+                <AICoPilotPanel
+                  context={context}
+                  plan={activePlan}
+                  onSourceChange={setEngineSource}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Clean Step-by-Step Footer Navigation Bar */}
+        <div className="bg-white rounded-2xl border border-slate-200 px-5 py-4 flex items-center justify-between shadow-xs">
+          <div>
+            {prevTab ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab(prevTab.id)}
+                className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition cursor-pointer"
+              >
+                ← Step {prevTab.step}: {prevTab.label}
+              </button>
+            ) : (
+              <span className="text-xs text-slate-400 font-medium">
+                Step 01 of 05 • Event Setup
+              </span>
+            )}
+          </div>
+
+          <div className="hidden sm:flex items-center gap-1.5">
+            {WORKSPACE_TABS.map((t) => (
+              <span
+                key={t.id}
+                className={`h-2 rounded-full transition-all ${t.id === activeTab ? 'w-6 bg-slate-900' : 'w-2 bg-slate-200'
+                  }`}
+              />
+            ))}
+          </div>
+
+          <div>
+            {nextTab ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab(nextTab.id)}
+                className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 transition cursor-pointer shadow-xs"
+              >
+                Next: {nextTab.label} (Step {nextTab.step}) →
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleExport('md')}
+                className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 transition cursor-pointer shadow-xs"
+              >
+                📥 Export Complete Plan (.MD)
+              </button>
+            )}
+          </div>
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="mt-auto border-t border-slate-200 bg-white py-6">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500 font-medium">
-          <div>
-            <strong>CalenderAI</strong> — GenAI Event & Milestone Planning Assistant. Built for PromptWars Virtual.
-          </div>
-          <div className="flex items-center gap-4">
-            <span>WCAG 2.1 AA Compliant</span>
-            <span>Client Security Guard Active</span>
-            <span>Total Bundle: &lt; 300 KB</span>
-          </div>
+      {/* Minimal Footer */}
+      <footer className="border-t border-slate-200 bg-white py-4 mt-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
+          <p>
+            <strong>CalenderAI</strong> — Multi-Vertical Event & Milestone Planning Assistant
+          </p>
+          <p>Powered by Context Decision Engine & Gemini 3.8 Flash Serverless Architecture</p>
         </div>
       </footer>
     </div>
