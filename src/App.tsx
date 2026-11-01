@@ -149,6 +149,11 @@ export default function App() {
     return Math.max(0, Math.ceil((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
   }, [context.eventDate]);
 
+  const perGuestCost = useMemo(
+    () => Math.round(context.totalBudget / Math.max(1, context.guestCount)),
+    [context.totalBudget, context.guestCount]
+  );
+
   // Persist state to localStorage
   useEffect(() => {
     try {
@@ -233,11 +238,11 @@ export default function App() {
       guestCount: 150,
       totalBudget: context.currency === 'INR' ? 500000 : 10000,
       currency: context.currency,
-      cityTier: 'tier2',
+      cityTier: 'tier2_urban',
       setting: 'indoor',
       culturalTheme: 'Modern Minimalist & Warm Lighting',
       dietaryPreferences: ['Vegetarian', 'Custom Menu'],
-      priorityFocus: 'Guest Experience & Smooth Logistics',
+      customNotes: 'Priority: Guest Experience & Smooth Logistics',
     });
     setActiveTab('overview');
   }, [context.eventType, context.currency]);
@@ -399,14 +404,14 @@ ${timeline
 ${vendors
             .map(
               (v) =>
-                `- **${v.category}** (${v.status.toUpperCase()}): Est. ${context.currency} ${v.estimatedCost.toLocaleString()}`
+                `- **${v.category}** (${v.status.toUpperCase()}): Est. ${context.currency} ${v.estimatedCostMin.toLocaleString()} - ${v.estimatedCostMax.toLocaleString()}`
             )
             .join('\n')}
 
 ---
 
 ## Personalized Ideas
-${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.estimatedCostImpact}]`).join('\n')}
+${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.estimatedImpact}]`).join('\n')}
 `;
         const dataStr = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
         const downloadAnchor = document.createElement('a');
@@ -443,13 +448,13 @@ ${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.esti
 
       {/* Top Application Header */}
       <Header
-        activeType={context.eventType}
+        currentType={context.eventType}
         onSelectType={handleSelectType}
         onSelectPreset={handleSelectPreset}
         onExport={handleExport}
         onReset={handleReset}
         engineSource={engineSource}
-        efficiencyScore={activePlan.efficiencyScore}
+        activePlan={activePlan}
       />
 
       {/* Main Single-Tab Workspace */}
@@ -481,8 +486,12 @@ ${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.esti
                 {context.title}
               </h1>
               <p className="text-xs sm:text-sm text-white/85 max-w-2xl">
-                Theme: <span className="font-semibold text-white">{context.culturalTheme}</span> •{' '}
-                Priority: <span className="font-semibold text-white">{context.priorityFocus}</span>
+                Theme: <span className="font-semibold text-white">{context.culturalTheme}</span>
+                {context.customNotes && (
+                  <>
+                    {' '}• <span className="font-semibold text-white">{context.customNotes}</span>
+                  </>
+                )}
               </p>
             </div>
 
@@ -513,7 +522,7 @@ ${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.esti
                 {context.currency} {context.totalBudget.toLocaleString()}
               </p>
               <p className="text-[11px] text-white/75">
-                {context.currency} {budgetComputation.perGuestCost.toLocaleString()} / guest
+                {context.currency} {perGuestCost.toLocaleString()} / guest
               </p>
             </div>
 
@@ -638,18 +647,20 @@ ${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.esti
         <div className="min-h-[480px]">
           {activeTab === 'overview' && (
             <div className="max-w-4xl mx-auto">
-              <ContextConfigurator context={context} onChange={setContext} />
+              <ContextConfigurator
+                context={context}
+                onChange={setContext}
+                efficiencyScore={activePlan.efficiencyScore}
+                riskAlerts={budgetComputation.riskAlerts}
+              />
             </div>
           )}
 
           {activeTab === 'budget' && (
             <div className="max-w-5xl mx-auto">
               <BudgetPlanner
+                context={context}
                 categories={budgetCategories}
-                totalBudget={context.totalBudget}
-                guestCount={context.guestCount}
-                currency={context.currency}
-                riskAlerts={budgetComputation.riskAlerts}
                 onUpdateCategoryAmount={handleUpdateCategoryAmount}
                 onToggleLock={handleToggleLock}
                 onUpdateActualSpent={handleUpdateActualSpent}
@@ -674,7 +685,7 @@ ${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.esti
               <VendorChecklist
                 vendors={vendors}
                 currency={context.currency}
-                onUpdateStatus={handleUpdateVendorStatus}
+                onUpdateVendorStatus={handleUpdateVendorStatus}
                 onUpdateActualQuoted={handleUpdateActualQuoted}
                 onToggleContractItem={handleToggleContractItem}
                 onAddVendor={handleAddVendor}
@@ -687,17 +698,16 @@ ${ideas.map((i) => `- **${i.title}** (${i.category}): ${i.description} [${i.esti
               <div className="lg:col-span-7">
                 <PersonalizedIdeasHub
                   ideas={ideas}
-                  context={context}
-                  isGenerating={isGeneratingIdeas}
-                  engineSource={engineSource}
-                  onRegenerateWithAI={handleRegenerateIdeas}
+                  isLoading={isGeneratingIdeas}
+                  onRegenerate={handleRegenerateIdeas}
                 />
               </div>
               <div className="lg:col-span-5 lg:sticky lg:top-6">
                 <AICoPilotPanel
                   context={context}
-                  plan={activePlan}
-                  onSourceChange={setEngineSource}
+                  efficiencyScore={activePlan.efficiencyScore}
+                  daysUntilEvent={daysUntilEvent}
+                  onSourceUpdate={setEngineSource}
                 />
               </div>
             </div>
