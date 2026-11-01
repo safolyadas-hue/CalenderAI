@@ -250,4 +250,12 @@ export async function askAICoPilot(
   const result = { reply, suggestedActions, source: 'local_context_engine' as const };
   copilotCache.set(cacheKey, result);
   return result;
+  })();
+
+  inFlightRequests.set(inFlightKey, queryPromise);
+  try {
+    return await queryPromise;
+  } finally {
+    inFlightRequests.delete(inFlightKey);
+  }
 }
