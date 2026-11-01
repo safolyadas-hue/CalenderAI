@@ -327,11 +327,12 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
         expect(url).toContain('?key=test-fake-gemini-key-123');
         expect((init?.headers as Record<string, string>)?.['x-goog-api-key']).toBe('test-fake-gemini-key-123');
 
-        // Verify request payload uses universal contents structure without system_instruction
+        // Verify request payload uses pure universal contents structure without system_instruction
         const parsedBody = JSON.parse(String(init?.body || '{}'));
         expect(parsedBody.contents).toBeDefined();
-        expect(parsedBody.contents[0].role).toBe('user');
+        expect(parsedBody.contents[0].parts).toBeDefined();
         expect(parsedBody.system_instruction).toBeUndefined();
+        expect(parsedBody.generationConfig).toBeUndefined();
 
         return Promise.resolve({
           ok: true,
@@ -379,12 +380,18 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
       expect(body.modelUsed).toBeDefined();
       expect(body.reply).toBe('Here is the final expert advice after internal reasoning.');
       expect(body.suggestedActions).toContain('Action 1');
+      expect(body.diagnostics).toBeDefined();
+      expect(body.diagnostics.hasApiKey).toBe(true);
+      expect(body.diagnostics.keyLength).toBeGreaterThan(0);
+      expect(body.diagnostics.upstreamError).toBeNull();
     });
 
-    it('returns fallbackReason: gemini_cascade_exhausted when all models fail', async () => {
+    it('returns fallbackReason and upstream error diagnostics when all models fail', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: false,
         status: 503,
+        statusText: 'Service Unavailable',
+        text: async () => 'Service Temporarily Overloaded',
       } as unknown as Response);
 
       const res = await handleAIPlannerRequest({
@@ -401,7 +408,63 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
       const body = JSON.parse(res.body);
       expect(body.aiMode).toBe('server_contextual_engine');
       expect(body.fallbackReason).toBe('gemini_cascade_exhausted');
+      expect(body.diagnostics).toBeDefined();
+      expect(body.diagnostics.hasApiKey).toBe(true);
+      expect(body.diagnostics.modelTried).toBe('gemini-1.5-flash');
+      expect(body.diagnostics.upstreamError).toContain('HTTP 503');
       expect(body.reply).toBeDefined();
+    });
+
+    it('conversational responder returns natural greeting for "hi" instead of repetitive efficiency summary', async () => {
+      // Force fallback by simulating missing API key or upstream error
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () => 'Model not found',
+      } as unknown as Response);
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_WEDDING,
+          userPrompt: 'hi',
+        }),
+        clientIp: '10.0.1.6',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('server_contextual_engine');
+      expect(body.reply).toContain('Hey there! 👋 I\'m your CalenderAI Co-Pilot');
+      expect(body.reply).not.toContain('CalenderAI Server Assistant: Your plan for');
+      expect(body.suggestedActions).toContain('Brainstorm creative themes');
+    });
+
+    it('conversational responder generates actual haiku for creative requests on fallback', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Error',
+        text: async () => 'Server error',
+      } as unknown as Response);
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_WEDDING,
+          userPrompt: 'write a haiku',
+        }),
+        clientIp: '10.0.1.7',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('server_contextual_engine');
+      expect(body.reply.split('\n')).toHaveLength(3);
+      expect(body.reply).not.toContain('efficiency score');
     });
   });
 });

@@ -140,51 +140,75 @@ export async function askAICoPilot(
     // Proceed to deterministic fallback
   }
 
-  // Step 5: Smart Deterministic Local Fallback based on live context
-  const lower = cleanPrompt.toLowerCase();
+  // Step 5: Smart Multi-Intent Local Fallback based on live context
+  const lower = cleanPrompt.toLowerCase().trim();
   let reply = '';
   let suggestedActions: string[] = [];
 
-  if (lower.includes('budget') || lower.includes('cut') || lower.includes('save') || lower.includes('cost')) {
+  // 1. Greetings & Introductory Help
+  if (/\b(hi|hello|hey|yo|greetings|good morning|good afternoon|good evening|who are you|help|what can you do)\b/i.test(lower)) {
+    reply = `Hey there! 👋 I'm your CalenderAI Co-Pilot. Right now we're looking at "${context.title}" (${context.guestCount} guests, ${context.currency} ${context.totalBudget.toLocaleString()}). Tell me what you'd like to do—we can brainstorm creative themes, trim the budget, write speeches/haikus, or check your vendor checklist!`;
+    suggestedActions = ['Brainstorm creative themes', 'Optimize my budget', 'Write a custom toast or haiku'];
+  } else if (/\b(haiku|poem|poetry|rhyme|toast|speech|joke|slogan|invite|invitation|song|vow|vows)\b/i.test(lower)) {
+    // 2. Creative Requests
+    if (lower.includes('haiku')) {
+      if (context.eventType === 'wedding') {
+        reply = 'Lanterns soft and bright,\nTwo hearts dance beneath the stars,\nLove begins tonight.';
+      } else if (context.eventType === 'birthday') {
+        reply = 'Candles glowing bright,\nAnother year of laughter,\nMake a wish tonight.';
+      } else {
+        reply = 'Hands joined side by side,\nStreets alive with shared delight,\nCommunity shines.';
+      }
+      suggestedActions = ['Write another verse', 'Add to speeches or vows', 'Save to event notes'];
+    } else if (lower.includes('toast') || lower.includes('speech')) {
+      reply = `Here is a custom celebratory toast for "${context.title}":\n\n"To everyone gathered here today under the ${context.setting} sky—may this celebration bring unforgettable memories, enduring warmth, and boundless joy to our incredible community. Here's to making today truly magical!" 🥂`;
+      suggestedActions = ['Make it shorter', 'Make it humorous', 'Save toast to notes'];
+    } else if (lower.includes('joke')) {
+      reply = `Why did the event planner bring a ladder to "${context.title}"?\n\nBecause the expectations were sky-high, but the budget was grounded! 😄`;
+      suggestedActions = ['Tell another joke', 'Back to planning', 'Check vendor checklist'];
+    } else if (lower.includes('invite') || lower.includes('invitation')) {
+      reply = `💌 **Invitation Draft for ${context.title}**\n\n"You are warmly invited to celebrate with us on ${context.eventDate}!\nJoin us for an unforgettable ${context.eventType} celebration featuring delicious cuisine, joyful music, and cherished moments.\n\nRSVP requested by 3 weeks prior. Dress code: ${context.culturalTheme || 'Celebratory Festive'}."`;
+      suggestedActions = ['Create digital RSVP link', 'Adjust invitation tone', 'Export invitation'];
+    } else {
+      reply = `Here is a celebratory verse crafted for "${context.title}":\n\n"Gather friends from near and far,\nUnder lantern light and star.\nCelebrate with joyous cheer,\nFor the milestone of the year!"`;
+      suggestedActions = ['Write another verse', 'Refine for programs', 'Print on invitations'];
+    }
+  } else if (/\b(budget|cost|costs|save|saving|cut|cheap|expensive|price|discount|optimize)\b/i.test(lower)) {
+    // 3. Budget Optimization
     const perGuest = Math.round(context.totalBudget / Math.max(context.guestCount, 1));
-    reply = `Based on your ${context.currency} ${context.totalBudget.toLocaleString()} total budget for ${context.guestCount} guests (${context.currency} ${perGuest}/guest), to safely optimize expenses:
-1. Re-negotiate venue packages by bundling AV/sound or off-peak hours (saves ~10-15%).
-2. Switch cut florals to sustainable potted arrangements or ambient lighting.
-3. Keep the Contingency Reserve locked at 8-10% to protect against unexpected costs.`;
-    suggestedActions = ['Lock Contingency Reserve', 'Review Vendor Quotes', 'Adjust Guest Count'];
-  } else if (lower.includes('weather') || lower.includes('rain') || lower.includes('outdoor')) {
-    reply = `For your ${context.setting} setting (${context.culturalTheme || 'Standard'} theme):
-1. Ensure the venue contract includes an explicit waterproof marquee or indoor hall rollover clause.
-2. Verify dual-generator power backup for sound and lighting in case of grid outage.
-3. Deploy covered misting fans or radiant patio heaters depending on the season.`;
-    suggestedActions = ['Add Weather Backup to Checklist', 'Review Venue Contract Clause', 'Check Generator Capacity'];
-  } else if (lower.includes('timeline') || lower.includes('urgent') || lower.includes('date') || lower.includes('schedule')) {
+    reply = `Strategic budget breakdown for "${context.title}" (${context.currency} ${context.totalBudget.toLocaleString()} total, ~${context.currency} ${perGuest}/guest):\n1. Bundle Venue & Production: Inquire if your venue offers preferred AV packages to save 12-18% immediately.\n2. Optimize High-Volume Rentals: Standardize table linens and glassware to avoid premium customization surcharges.\n3. Safeguard Contingency: Maintain an 8-10% reserve (${context.currency} ${Math.round(context.totalBudget * 0.08).toLocaleString()}) for day-of logistical surprises.`;
+    suggestedActions = ['Lock Contingency Reserve', 'Review High-Cost Categories', 'Adjust Guest Count'];
+  } else if (/\b(diet|food|menu|catering|drinks|drink|beverage|bar|cocktail|mocktail|plate|tasting)\b/i.test(lower)) {
+    // 4. Catering / Food / Drinks
+    const perPlate = Math.round((context.totalBudget * 0.35) / Math.max(context.guestCount, 1));
+    const diets = context.dietaryPreferences.length > 0 ? context.dietaryPreferences.join(', ') : 'standard';
+    reply = `For catering "${context.title}" across ${context.guestCount} guests (allocated target: ~${context.currency} ${perPlate}/plate, accounting for ${diets} preferences):\n1. Establish dedicated live interactive counters for specialty items to prevent queue bottlenecks.\n2. Curate 2 signature mocktails/cocktails reflecting your ${context.culturalTheme || 'festive'} theme rather than a costly full open bar.\n3. Demand certified allergen and dietary disclosure sheets from the head caterer 14 days before the event.`;
+    suggestedActions = ['Add Dietary Badges to Checklist', 'Schedule Menu Tasting', 'Review Caterer Contract'];
+  } else if (/\b(decor|theme|vibe|music|dj|entertainment|lighting|flowers|floral|sound|ambiance|stage)\b/i.test(lower)) {
+    // 5. Decor & Entertainment
+    reply = `Decor & Entertainment recommendations for your ${context.setting} ${context.culturalTheme || 'celebratory'} theme:\n1. Use warm architectural uplighting and kinetic fairy lights—they transform the venue at 1/3 the cost of fresh cut florals.\n2. Curate a 3-stage sound journey: acoustic background during guest arrival, curated playlist through dinner, and high-energy live performance/DJ for the finale.\n3. Incorporate sustainable potted greenery and regional decorative motifs that guests can take home as eco-friendly favors.`;
+    suggestedActions = ['Add AV & Sound to Checklist', 'Review Decor Quotes', 'Explore Theme Ideas'];
+  } else if (/\b(timeline|urgent|next step|schedule|date|when|milestone|deadline)\b/i.test(lower)) {
+    // 6. Timeline Priorities
     if (planSummary.daysUntilEvent < 30) {
-      reply = `⚡ Urgent Schedule Alert: With only ${planSummary.daysUntilEvent} days remaining, you are in an Accelerated Sprint. Focus immediately on:
-1. Locking Venue & Caterer deposits within 48 hours.
-2. Sending digital invitations with instant RSVP links.
-3. Finalizing municipal/sound permits if applicable.`;
+      reply = `⚡ Urgent Schedule Priorities (${planSummary.daysUntilEvent} days remaining — Accelerated Sprint):\n1. Lock signed vendor contracts & initial deposits for Venue and Lead Caterer within 48 hours.\n2. Dispatch digital RSVP links with strict 7-day confirmation deadlines.\n3. Secure municipal noise/sound permits and confirm venue load-in timeframes.`;
       suggestedActions = ['Filter Critical Milestones', 'Send Digital RSVPs', 'Contact Venue Manager'];
     } else {
-      reply = `You have ${planSummary.daysUntilEvent} days until the event — your planning horizon is on track. Your current priority is completing vendor selections and confirming bookings before peak seasonal rate spikes.`;
+      reply = `Planning Horizon Priorities (${planSummary.daysUntilEvent} days until ${context.eventDate}):\n1. Finalize your core vendor shortlist and lock in tastings/walkthroughs.\n2. Send Save-the-Date notices to lock in guest availability.\n3. Establish your payment milestone calendar to avoid last-minute cashflow pinches.`;
       suggestedActions = ['Review Vendor Pipeline', 'Schedule Tasting Sessions', 'Draft Invitations'];
     }
-  } else if (lower.includes('diet') || lower.includes('food') || lower.includes('menu') || lower.includes('catering')) {
-    const diets = context.dietaryPreferences.length > 0 ? context.dietaryPreferences.join(', ') : 'standard';
-    reply = `For your menu catering to ${diets} preferences across ${context.guestCount} guests:
-1. Designate segregated prep and serving counters with visible dietary icon markers.
-2. Implement live chef-crafted stations to maximize freshness and reduce food waste by 25%.
-3. Require the head caterer to provide allergen disclosure sheets before final payment.`;
-    suggestedActions = ['Add Dietary Badges to Checklist', 'Schedule Menu Tasting', 'Confirm Plate Minimums'];
-  } else if (lower.includes('contract') || lower.includes('vendor')) {
-    reply = `Key clauses to verify across all vendor contracts:
-1. Explicit cancellation, date-rescheduling, and force-majeure refund percentages.
-2. Specific arrival, sound-check, and teardown buffer times.
-3. Backup staff or equipment replacement guarantees in case of emergencies.`;
-    suggestedActions = ['Inspect Vendor Checklist', 'Add Deposit Dates to Timeline', 'Verify FSSAI/Insurance'];
+  } else if (/\b(weather|rain|wind|outdoor|marquee|shelter|contract|vendor)\b/i.test(lower)) {
+    // 7. Venue / Weather / Contracts
+    reply = `For your ${context.setting} setting and vendor contracts:\n1. Ensure the venue contract includes an explicit waterproof marquee rollover clause with a 48-hour call time.\n2. Verify dual-generator power backup for sound and lighting in case of grid outage.\n3. Confirm explicit cancellation, date-rescheduling, and force-majeure refund percentages across all contracts.`;
+    suggestedActions = ['Add Weather Backup to Checklist', 'Review Venue Contract Clause', 'Check Generator Capacity'];
+  } else if (/\b(score|efficiency|feasibility)\b/i.test(lower)) {
+    // 8. Specific Efficiency Score query
+    reply = `Your plan for "${context.title}" currently has an efficiency score of ${planSummary.efficiencyScore}/100 with ${planSummary.daysUntilEvent} days until the event date. Key factors boosting your score include balanced budget distribution and complete vendor coverage.`;
+    suggestedActions = ['Optimize Budget by 10%', 'Review Milestone Timeline', 'Check Checklist Completion'];
   } else {
-    reply = `CalenderAI Context Assistant: Your plan for "${context.title}" has an efficiency score of ${planSummary.efficiencyScore}/100 with ${planSummary.daysUntilEvent} days until the event. I can help optimize your ${context.currency} ${context.totalBudget.toLocaleString()} budget, organize vendor contracts, adapt your timeline, or tailor ideas for your ${context.culturalTheme || 'custom'} theme.`;
-    suggestedActions = ['Optimize Budget by 10%', 'Review Weather Contingency', 'Check Urgent Milestones'];
+    // 9. Any Other Custom Question — Contextual tailored paragraph
+    reply = `Great question regarding "${cleanPrompt.slice(0, 60)}" for your upcoming ${context.eventType} ("${context.title}")!\nFor a ${context.setting} event with ${context.guestCount} guests and a budget of ${context.currency} ${context.totalBudget.toLocaleString()}, the key is balancing memorable guest experiences with tight vendor coordination. Let me know if you would like me to draft a specific checklist item, calculate itemized cost estimates, or generate tailored timeline milestones for this!`;
+    suggestedActions = ['Explore Personalized Ideas', 'Review Budget Allocation', 'Ask Another Question'];
   }
 
   const result = { reply, suggestedActions, source: 'local_context_engine' as const };

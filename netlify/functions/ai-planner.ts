@@ -44,26 +44,20 @@ function getIpLimiter(ip: string): RateLimiter {
 
 const MODEL_CASCADE = [
   'gemini-2.5-flash',
-  'gemini-flash-latest',
-  'gemini-2.5-flash-lite',
-  'gemini-3.8-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
 ];
 
 async function callGemini(
   apiKey: string,
   model: string,
-  systemInstruction: string,
-  userPrompt: string
-): Promise<string | null> {
+  fullPromptString: string
+): Promise<{ text: string | null; error: string | null }> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 9000);
-
-    const combinedPrompt = systemInstruction.trim()
-      ? `${systemInstruction.trim()}\n\n---\n\n${userPrompt.trim()}`
-      : userPrompt.trim();
 
     const response = await fetch(url, {
       method: 'POST',
@@ -74,21 +68,23 @@ async function callGemini(
       body: JSON.stringify({
         contents: [
           {
-            role: 'user',
-            parts: [{ text: combinedPrompt }],
+            parts: [{ text: fullPromptString }],
           },
         ],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 2048,
-        },
       }),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      return null;
+      let errText = '';
+      try {
+        errText = await response.text();
+      } catch {
+        // ignore
+      }
+      const shortErr = errText ? errText.slice(0, 150) : response.statusText;
+      return { text: null, error: `HTTP ${response.status}: ${shortErr}` };
     }
 
     const data = await response.json();
@@ -103,30 +99,42 @@ async function callGemini(
         .map((p: any) => p.text)
         .join('\n');
       const text = nonThought.trim().length > 0 ? nonThought : allText;
-      return text.trim().length > 0 ? text.trim() : null;
+      if (text.trim().length > 0) {
+        return { text: text.trim(), error: null };
+      }
     }
-    return null;
-  } catch {
-    return null;
+    return { text: null, error: 'Empty parts returned by Gemini' };
+  } catch (err: any) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: null, error: msg || 'Network error or timeout' };
   }
+}
+
+interface CascadeResult {
+  text: string | null;
+  model: string | null;
+  lastModelTried: string;
+  lastError: string | null;
 }
 
 async function callGeminiWithCascade(
   apiKey: string,
   preferredModel: string,
-  systemInstruction: string,
-  userPrompt: string
-): Promise<{ text: string; model: string } | null> {
-  // Try preferred model first, then cascade across all free-tier models
+  fullPromptString: string
+): Promise<CascadeResult> {
   const modelsToTry = [preferredModel, ...MODEL_CASCADE.filter((m) => m !== preferredModel)];
+  let lastModelTried = preferredModel;
+  let lastError: string | null = null;
 
   for (const model of modelsToTry) {
-    const result = await callGemini(apiKey, model, systemInstruction, userPrompt);
-    if (result) {
-      return { text: result, model };
+    lastModelTried = model;
+    const res = await callGemini(apiKey, model, fullPromptString);
+    if (res.text) {
+      return { text: res.text, model, lastModelTried, lastError: null };
     }
+    lastError = `[${model}] ${res.error}`;
   }
-  return null;
+  return { text: null, model: null, lastModelTried, lastError };
 }
 
 // ─── System Instructions ───────────────────────────────────────────────
@@ -166,48 +174,123 @@ function generateServerCopilotReply(
   userPrompt: string,
   planSummary?: { efficiencyScore?: number; daysUntilEvent?: number }
 ): { reply: string; suggestedActions: string[] } {
-  const lower = userPrompt.toLowerCase();
-  const score = planSummary?.efficiencyScore ?? 70;
+  const lower = userPrompt.toLowerCase().trim();
+  const score = planSummary?.efficiencyScore ?? 75;
   const daysLeft = planSummary?.daysUntilEvent ?? 90;
 
-  if (lower.includes('budget') || lower.includes('cut') || lower.includes('save') || lower.includes('cost')) {
+  // 1. Greetings & Introductory Help
+  if (/\b(hi|hello|hey|yo|greetings|good morning|good afternoon|good evening|who are you|help|what can you do)\b/i.test(lower)) {
+    return {
+      reply: `Hey there! 👋 I'm your CalenderAI Co-Pilot. Right now we're looking at "${context.title}" (${context.guestCount} guests, ${context.currency} ${context.totalBudget.toLocaleString()}). Tell me what you'd like to do—we can brainstorm creative themes, trim the budget, write speeches/haikus, or check your vendor checklist!`,
+      suggestedActions: ['Brainstorm creative themes', 'Optimize my budget', 'Write a custom toast or haiku'],
+    };
+  }
+
+  // 2. Creative Requests (haiku, poem, joke, toast, speech, slogan, invite, song)
+  if (/\b(haiku|poem|poetry|rhyme|toast|speech|joke|slogan|invite|invitation|song|vow|vows)\b/i.test(lower)) {
+    if (lower.includes('haiku')) {
+      let haikuText = '';
+      if (context.eventType === 'wedding') {
+        haikuText = 'Lanterns soft and bright,\nTwo hearts dance beneath the stars,\nLove begins tonight.';
+      } else if (context.eventType === 'birthday') {
+        haikuText = 'Candles glowing bright,\nAnother year of laughter,\nMake a wish tonight.';
+      } else {
+        haikuText = 'Hands joined side by side,\nStreets alive with shared delight,\nCommunity shines.';
+      }
+      return {
+        reply: haikuText,
+        suggestedActions: ['Write another verse', 'Add to speeches or vows', 'Save to event notes'],
+      };
+    }
+
+    if (lower.includes('toast') || lower.includes('speech')) {
+      return {
+        reply: `Here is a custom celebratory toast for "${context.title}":\n\n"To everyone gathered here today under the ${context.setting} sky—may this celebration bring unforgettable memories, enduring warmth, and boundless joy to our incredible community. Here's to making today truly magical!" 🥂`,
+        suggestedActions: ['Make it shorter', 'Make it humorous', 'Save toast to notes'],
+      };
+    }
+
+    if (lower.includes('joke')) {
+      return {
+        reply: `Why did the event planner bring a ladder to "${context.title}"?\n\nBecause the expectations were sky-high, but the budget was grounded! 😄`,
+        suggestedActions: ['Tell another joke', 'Back to planning', 'Check vendor checklist'],
+      };
+    }
+
+    if (lower.includes('invite') || lower.includes('invitation')) {
+      return {
+        reply: `💌 **Invitation Draft for ${context.title}**\n\n"You are warmly invited to celebrate with us on ${context.eventDate}!\nJoin us for an unforgettable ${context.eventType} celebration featuring delicious cuisine, joyful music, and cherished moments.\n\nRSVP requested by 3 weeks prior. Dress code: ${context.culturalTheme || 'Celebratory Festive'}."`,
+        suggestedActions: ['Create digital RSVP link', 'Adjust invitation tone', 'Export invitation'],
+      };
+    }
+
+    return {
+      reply: `Here is a celebratory verse crafted for "${context.title}":\n\n"Gather friends from near and far,\nUnder lantern light and star.\nCelebrate with joyous cheer,\nFor the milestone of the year!"`,
+      suggestedActions: ['Write another verse', 'Refine for programs', 'Print on invitations'],
+    };
+  }
+
+  // 3. Budget / Cost / Save / Cheap / Expensive
+  if (/\b(budget|cost|costs|save|saving|cut|cheap|expensive|price|discount|optimize)\b/i.test(lower)) {
     const perGuest = Math.round(context.totalBudget / Math.max(context.guestCount, 1));
     return {
-      reply: `Based on your ${context.currency} ${context.totalBudget.toLocaleString()} total budget for ${context.guestCount} guests (${context.currency} ${perGuest}/guest), to safely optimize expenses:\n1. Re-negotiate venue packages by bundling AV/sound or off-peak hours (saves ~10-15%).\n2. Switch cut florals to sustainable potted arrangements or ambient lighting.\n3. Keep the Contingency Reserve locked at 8-10% to protect against unexpected costs.`,
-      suggestedActions: ['Lock Contingency Reserve', 'Review Vendor Quotes', 'Adjust Guest Count'],
+      reply: `Strategic budget breakdown for "${context.title}" (${context.currency} ${context.totalBudget.toLocaleString()} total, ~${context.currency} ${perGuest}/guest):\n1. Bundle Venue & Production: Inquire if your venue offers preferred AV packages to save 12-18% immediately.\n2. Optimize High-Volume Rentals: Standardize table linens and glassware to avoid premium customization surcharges.\n3. Safeguard Contingency: Maintain an 8-10% reserve (${context.currency} ${Math.round(context.totalBudget * 0.08).toLocaleString()}) for day-of logistical surprises.`,
+      suggestedActions: ['Lock Contingency Reserve', 'Review High-Cost Categories', 'Adjust Guest Count'],
     };
-  } else if (lower.includes('weather') || lower.includes('rain') || lower.includes('outdoor')) {
+  }
+
+  // 4. Catering / Food / Menu / Drinks
+  if (/\b(diet|food|menu|catering|drinks|drink|beverage|bar|cocktail|mocktail|plate|tasting)\b/i.test(lower)) {
+    const perPlate = Math.round((context.totalBudget * 0.35) / Math.max(context.guestCount, 1));
+    const diets = context.dietaryPreferences.length > 0 ? context.dietaryPreferences.join(', ') : 'standard';
     return {
-      reply: `For your ${context.setting} setting (${context.culturalTheme || 'Standard'} theme):\n1. Ensure the venue contract includes an explicit waterproof marquee or indoor hall rollover clause.\n2. Verify dual-generator power backup for sound and lighting in case of grid outage.\n3. Deploy covered misting fans or radiant patio heaters depending on the season.`,
-      suggestedActions: ['Add Weather Backup to Checklist', 'Review Venue Contract Clause', 'Check Generator Capacity'],
+      reply: `For catering "${context.title}" across ${context.guestCount} guests (allocated target: ~${context.currency} ${perPlate}/plate, accounting for ${diets} preferences):\n1. Establish dedicated live interactive counters for specialty items to prevent queue bottlenecks.\n2. Curate 2 signature mocktails/cocktails reflecting your ${context.culturalTheme || 'festive'} theme rather than a costly full open bar.\n3. Demand certified allergen and dietary disclosure sheets from the head caterer 14 days before the event.`,
+      suggestedActions: ['Add Dietary Badges to Checklist', 'Schedule Menu Tasting', 'Review Caterer Contract'],
     };
-  } else if (lower.includes('timeline') || lower.includes('urgent') || lower.includes('schedule')) {
+  }
+
+  // 5. Decor / Theme / Vibe / Music / Entertainment
+  if (/\b(decor|theme|vibe|music|dj|entertainment|lighting|flowers|floral|sound|ambiance|stage)\b/i.test(lower)) {
+    return {
+      reply: `Decor & Entertainment recommendations for your ${context.setting} ${context.culturalTheme || 'celebratory'} theme:\n1. Use warm architectural uplighting and kinetic fairy lights—they transform the venue at 1/3 the cost of fresh cut florals.\n2. Curate a 3-stage sound journey: acoustic background during guest arrival, curated playlist through dinner, and high-energy live performance/DJ for the finale.\n3. Incorporate sustainable potted greenery and regional decorative motifs that guests can take home as eco-friendly favors.`,
+      suggestedActions: ['Add AV & Sound to Checklist', 'Review Decor Quotes', 'Explore Theme Ideas'],
+    };
+  }
+
+  // 6. Timeline / Urgent / Next Steps / Schedule
+  if (/\b(timeline|urgent|next step|schedule|date|when|milestone|deadline)\b/i.test(lower)) {
     if (daysLeft < 30) {
       return {
-        reply: `⚡ Urgent Schedule Alert: With only ${daysLeft} days remaining, you are in an Accelerated Sprint. Focus immediately on:\n1. Locking Venue & Caterer deposits within 48 hours.\n2. Sending digital invitations with instant RSVP links.\n3. Finalizing municipal/sound permits if applicable.`,
+        reply: `⚡ Urgent Schedule Priorities (${daysLeft} days remaining — Accelerated Sprint):\n1. Lock signed vendor contracts & initial deposits for Venue and Lead Caterer within 48 hours.\n2. Dispatch digital RSVP links with strict 7-day confirmation deadlines.\n3. Secure municipal noise/sound permits and confirm venue load-in timeframes.`,
         suggestedActions: ['Filter Critical Milestones', 'Send Digital RSVPs', 'Contact Venue Manager'],
       };
     }
     return {
-      reply: `You have ${daysLeft} days until the event — your planning horizon is on track. Your current priority is completing vendor selections and confirming bookings before peak seasonal rate spikes.`,
+      reply: `Planning Horizon Priorities (${daysLeft} days until ${context.eventDate}):\n1. Finalize your core vendor shortlist and lock in tastings/walkthroughs.\n2. Send Save-the-Date notices to lock in guest availability.\n3. Establish your payment milestone calendar to avoid last-minute cashflow pinches.`,
       suggestedActions: ['Review Vendor Pipeline', 'Schedule Tasting Sessions', 'Draft Invitations'],
-    };
-  } else if (lower.includes('diet') || lower.includes('food') || lower.includes('menu') || lower.includes('catering')) {
-    const diets = context.dietaryPreferences.length > 0 ? context.dietaryPreferences.join(', ') : 'standard';
-    return {
-      reply: `For your menu catering to ${diets} preferences across ${context.guestCount} guests:\n1. Designate segregated prep and serving counters with visible dietary icon markers.\n2. Implement live chef-crafted stations to maximize freshness and reduce food waste by 25%.\n3. Require the head caterer to provide allergen disclosure sheets before final payment.`,
-      suggestedActions: ['Add Dietary Badges to Checklist', 'Schedule Menu Tasting', 'Confirm Plate Minimums'],
-    };
-  } else if (lower.includes('contract') || lower.includes('vendor')) {
-    return {
-      reply: `Key clauses to verify across all vendor contracts:\n1. Explicit cancellation, date-rescheduling, and force-majeure refund percentages.\n2. Specific arrival, sound-check, and teardown buffer times.\n3. Backup staff or equipment replacement guarantees in case of emergencies.`,
-      suggestedActions: ['Inspect Vendor Checklist', 'Add Deposit Dates to Timeline', 'Verify FSSAI/Insurance'],
     };
   }
 
+  // 7. Venue / Weather / Contracts
+  if (/\b(weather|rain|wind|outdoor|marquee|shelter|contract|vendor)\b/i.test(lower)) {
+    return {
+      reply: `For your ${context.setting} setting and vendor contracts:\n1. Ensure the venue contract includes an explicit waterproof marquee rollover clause with a 48-hour call time.\n2. Verify dual-generator power backup for sound and lighting in case of grid outage.\n3. Confirm explicit cancellation, date-rescheduling, and force-majeure refund percentages across all contracts.`,
+      suggestedActions: ['Add Weather Backup to Checklist', 'Review Venue Contract Clause', 'Check Generator Capacity'],
+    };
+  }
+
+  // 8. Specific Efficiency Score query
+  if (/\b(score|efficiency|feasibility)\b/i.test(lower)) {
+    return {
+      reply: `Your plan for "${context.title}" currently has an efficiency score of ${score}/100 with ${daysLeft} days until the event date. Key factors boosting your score include balanced budget distribution and complete vendor coverage.`,
+      suggestedActions: ['Optimize Budget by 10%', 'Review Milestone Timeline', 'Check Checklist Completion'],
+    };
+  }
+
+  // 9. Any Other Custom Question — Contextual and tailored conversational paragraph
   return {
-    reply: `CalenderAI Server Assistant: Your plan for "${context.title}" has an efficiency score of ${score}/100 with ${daysLeft} days until the event. I can help optimize your ${context.currency} ${context.totalBudget.toLocaleString()} budget, organize vendor contracts, adapt your timeline, or tailor ideas for your ${context.culturalTheme || 'custom'} theme.`,
-    suggestedActions: ['Optimize Budget by 10%', 'Review Weather Contingency', 'Check Urgent Milestones'],
+    reply: `Great question regarding "${userPrompt.slice(0, 60)}" for your upcoming ${context.eventType} ("${context.title}")!\nFor a ${context.setting} event with ${context.guestCount} guests and a budget of ${context.currency} ${context.totalBudget.toLocaleString()}, the key is balancing memorable guest experiences with tight vendor coordination. Let me know if you would like me to draft a specific checklist item, calculate itemized cost estimates, or generate tailored timeline milestones for this!`,
+    suggestedActions: ['Explore Personalized Ideas', 'Review Budget Allocation', 'Ask Another Question'],
   };
 }
 
@@ -325,12 +408,16 @@ export async function handleAIPlannerRequest(req: AIPlannerRequest): Promise<Fun
 
   // ── Determine AI engine mode ───────────────────────────────────────
   const rawKey =
-    typeof process !== 'undefined'
-      ? process.env?.GEMINI_API_KEY || (globalThis as any).Netlify?.env?.get?.('GEMINI_API_KEY') || ''
-      : (globalThis as any).Netlify?.env?.get?.('GEMINI_API_KEY') || '';
+    (typeof process !== 'undefined' ? (process.env?.GEMINI_API_KEY || process.env?.VITE_GEMINI_API_KEY) : '') ||
+    (globalThis as any).Netlify?.env?.get?.('GEMINI_API_KEY') ||
+    (globalThis as any).Netlify?.env?.get?.('VITE_GEMINI_API_KEY') ||
+    '';
   const apiKey = rawKey.trim().replace(/^["']|["']$/g, '');
   const preferredModel =
     (typeof process !== 'undefined' ? process.env?.GEMINI_MODEL : undefined) || 'gemini-2.5-flash';
+
+  let lastModelTried = 'none';
+  let lastError: string | null = null;
 
   // ── Route by action ────────────────────────────────────────────────
 
@@ -348,8 +435,12 @@ Cultural Theme: ${safeContext.culturalTheme || 'Not specified'}
 Dietary Preferences: ${(safeContext.dietaryPreferences || []).join(', ') || 'None specified'}
 Notes: ${safeContext.customNotes || 'None'}`;
 
-      const geminiResult = await callGeminiWithCascade(apiKey, preferredModel, IDEAS_SYSTEM_INSTRUCTION, contextPrompt);
-      if (geminiResult && geminiResult.text) {
+      const fullPrompt = `${IDEAS_SYSTEM_INSTRUCTION}\n\n---\n\n${contextPrompt}`;
+      const geminiResult = await callGeminiWithCascade(apiKey, preferredModel, fullPrompt);
+      lastModelTried = geminiResult.lastModelTried;
+      lastError = geminiResult.lastError;
+
+      if (geminiResult.text && geminiResult.model) {
         try {
           const cleaned = geminiResult.text
             .replace(/^```json\s*/i, '')
@@ -364,10 +455,16 @@ Notes: ${safeContext.customNotes || 'None'}`;
               aiMode: 'gemini_live',
               model: geminiResult.model,
               modelUsed: geminiResult.model,
+              diagnostics: {
+                hasApiKey: Boolean(apiKey),
+                keyLength: apiKey.length,
+                modelTried: lastModelTried,
+                upstreamError: null,
+              },
             });
           }
         } catch {
-          // Gemini returned non-JSON ideas, fall through to contextual engine
+          lastError = lastError || 'Failed to parse JSON ideas from Gemini';
         }
       }
     }
@@ -379,6 +476,12 @@ Notes: ${safeContext.customNotes || 'None'}`;
       source: 'netlify_serverless',
       aiMode: 'server_contextual_engine',
       fallbackReason: apiKey ? 'gemini_cascade_exhausted' : 'missing_api_key',
+      diagnostics: {
+        hasApiKey: Boolean(apiKey),
+        keyLength: apiKey.length,
+        modelTried: lastModelTried,
+        upstreamError: lastError || (apiKey ? 'Cascade exhausted' : 'API key not configured'),
+      },
     });
   }
 
@@ -402,8 +505,12 @@ Event Context Reference:
 
 Instruction: Provide a direct, complete, and engaging response to the User Prompt above.`;
 
-      const geminiResult = await callGeminiWithCascade(apiKey, preferredModel, COPILOT_SYSTEM_INSTRUCTION, contextPrompt);
-      if (geminiResult && geminiResult.text) {
+      const fullPrompt = `${COPILOT_SYSTEM_INSTRUCTION}\n\n---\n\n${contextPrompt}`;
+      const geminiResult = await callGeminiWithCascade(apiKey, preferredModel, fullPrompt);
+      lastModelTried = geminiResult.lastModelTried;
+      lastError = geminiResult.lastError;
+
+      if (geminiResult.text && geminiResult.model) {
         let reply = '';
         let suggestedActions: string[] = ['Ask a follow-up question', 'Explore more ideas', 'Save to event notes'];
 
@@ -451,6 +558,12 @@ Instruction: Provide a direct, complete, and engaging response to the User Promp
             aiMode: 'gemini_live',
             model: geminiResult.model,
             modelUsed: geminiResult.model,
+            diagnostics: {
+              hasApiKey: Boolean(apiKey),
+              keyLength: apiKey.length,
+              modelTried: lastModelTried,
+              upstreamError: null,
+            },
           });
         }
       }
@@ -463,6 +576,12 @@ Instruction: Provide a direct, complete, and engaging response to the User Promp
       source: 'netlify_serverless',
       aiMode: 'server_contextual_engine',
       fallbackReason: apiKey ? 'gemini_cascade_exhausted' : 'missing_api_key',
+      diagnostics: {
+        hasApiKey: Boolean(apiKey),
+        keyLength: apiKey.length,
+        modelTried: lastModelTried,
+        upstreamError: lastError || (apiKey ? 'Cascade exhausted' : 'API key not configured'),
+      },
     });
   }
 
