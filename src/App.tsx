@@ -59,6 +59,24 @@ export default function App() {
     setIdeas(generateContextualIdeas(context));
   }, [context.eventType, context.eventDate, context.totalBudget, context.cityTier, context.setting]);
 
+  // Auto-sync engine source badge with Netlify AI Serverless on mount
+  useEffect(() => {
+    let isMounted = true;
+    requestPersonalizedIdeas(context)
+      .then((res) => {
+        if (isMounted) {
+          setIdeas(res.ideas);
+          setEngineSource(res.source);
+        }
+      })
+      .catch(() => {
+        // Silently retain fallback on error
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Days until event calculation
   const daysUntilEvent = useMemo(() => {
     const target = new Date(context.eventDate + 'T00:00:00');

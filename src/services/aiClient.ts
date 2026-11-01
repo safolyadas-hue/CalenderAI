@@ -7,8 +7,8 @@ import { generateContextualIdeas } from '../engines/decisionEngine';
 const clientRateLimiter = new RateLimiter(12, 0.2);
 
 // Cache for AI responses: 30 entries, 10-minute TTL
-const ideasCache = new LRUCache<string, PersonalizedIdea[]>(30, 10 * 60 * 1000);
-const copilotCache = new LRUCache<string, { reply: string; suggestedActions: string[] }>(30, 10 * 60 * 1000);
+const ideasCache = new LRUCache<string, { ideas: PersonalizedIdea[]; source: EngineSource }>(30, 10 * 60 * 1000);
+const copilotCache = new LRUCache<string, { reply: string; suggestedActions: string[]; source: EngineSource }>(30, 10 * 60 * 1000);
 
 export type EngineSource = 'netlify_serverless' | 'local_context_engine';
 
@@ -22,7 +22,7 @@ export async function requestPersonalizedIdeas(
   const cacheKey = `ideas_${context.eventType}_${context.setting}_${context.culturalTheme}_${context.guestCount}`;
   const cached = ideasCache.get(cacheKey);
   if (cached) {
-    return { ideas: cached, source: 'local_context_engine' };
+    return cached;
   }
 
   // Attempt remote Netlify function if available
@@ -41,8 +41,9 @@ export async function requestPersonalizedIdeas(
     if (response.ok) {
       const data = await response.json();
       if (Array.isArray(data.ideas) && data.ideas.length > 0) {
-        ideasCache.set(cacheKey, data.ideas);
-        return { ideas: data.ideas, source: 'netlify_serverless' };
+        const result = { ideas: data.ideas as PersonalizedIdea[], source: 'netlify_serverless' as const };
+        ideasCache.set(cacheKey, result);
+        return result;
       }
     }
   } catch {
@@ -51,8 +52,9 @@ export async function requestPersonalizedIdeas(
 
   // Fallback to local deterministic decision engine
   const localIdeas = generateContextualIdeas(context);
-  ideasCache.set(cacheKey, localIdeas);
-  return { ideas: localIdeas, source: 'local_context_engine' };
+  const result = { ideas: localIdeas, source: 'local_context_engine' as const };
+  ideasCache.set(cacheKey, result);
+  return result;
 }
 
 /**
@@ -101,7 +103,7 @@ export async function askAICoPilot(
   const cacheKey = `copilot_${context.eventType}_${cleanPrompt.toLowerCase().slice(0, 80)}`;
   const cached = copilotCache.get(cacheKey);
   if (cached) {
-    return { ...cached, source: 'local_context_engine' };
+    return cached;
   }
 
   // Step 4: Attempt Netlify Serverless API
@@ -125,12 +127,13 @@ export async function askAICoPilot(
     if (response.ok) {
       const data = await response.json();
       if (data.reply) {
-        copilotCache.set(cacheKey, { reply: data.reply, suggestedActions: data.suggestedActions || [] });
-        return {
+        const result = {
           reply: data.reply,
           suggestedActions: data.suggestedActions || [],
-          source: 'netlify_serverless',
+          source: 'netlify_serverless' as const,
         };
+        copilotCache.set(cacheKey, result);
+        return result;
       }
     }
   } catch {
@@ -184,7 +187,7 @@ export async function askAICoPilot(
     suggestedActions = ['Optimize Budget by 10%', 'Review Weather Contingency', 'Check Urgent Milestones'];
   }
 
-  const result = { reply, suggestedActions };
+  const result = { reply, suggestedActions, source: 'local_context_engine' as const };
   copilotCache.set(cacheKey, result);
-  return { ...result, source: 'local_context_engine' };
+  return result;
 }

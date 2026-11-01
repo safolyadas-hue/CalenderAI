@@ -320,5 +320,88 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
       expect(body.reply).toContain('fallback cascade');
       expect(callCount).toBeGreaterThanOrEqual(2);
     });
+
+    it('filters out thinking model thought chunks and extracts final answer', async () => {
+      globalThis.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        // Verify API key passed in both query param and header
+        expect(url).toContain('?key=test-fake-gemini-key-123');
+        expect((init?.headers as Record<string, string>)?.['x-goog-api-key']).toBe('test-fake-gemini-key-123');
+
+        // Verify request payload uses universal contents structure without system_instruction
+        const parsedBody = JSON.parse(String(init?.body || '{}'));
+        expect(parsedBody.contents).toBeDefined();
+        expect(parsedBody.contents[0].role).toBe('user');
+        expect(parsedBody.system_instruction).toBeUndefined();
+
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: 'Thinking through the event context and guest count...',
+                      thought: true,
+                    },
+                    {
+                      text: 'Considering budget distribution across catering and decor...',
+                      thought: true,
+                    },
+                    {
+                      text: JSON.stringify({
+                        reply: 'Here is the final expert advice after internal reasoning.',
+                        suggestedActions: ['Action 1', 'Action 2'],
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        } as unknown as Response);
+      });
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_WEDDING,
+          userPrompt: 'Help me plan the evening lighting transition',
+        }),
+        clientIp: '10.0.1.4',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('gemini_live');
+      expect(body.modelUsed).toBeDefined();
+      expect(body.reply).toBe('Here is the final expert advice after internal reasoning.');
+      expect(body.suggestedActions).toContain('Action 1');
+    });
+
+    it('returns fallbackReason: gemini_cascade_exhausted when all models fail', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+      } as unknown as Response);
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_WEDDING,
+          userPrompt: 'What should our contingency plan be for high winds?',
+        }),
+        clientIp: '10.0.1.5',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('server_contextual_engine');
+      expect(body.fallbackReason).toBe('gemini_cascade_exhausted');
+      expect(body.reply).toBeDefined();
+    });
   });
 });

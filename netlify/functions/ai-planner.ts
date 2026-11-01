@@ -42,7 +42,12 @@ function getIpLimiter(ip: string): RateLimiter {
 
 // ─── Free-Tier Gemini Model Cascade ────────────────────────────────────
 
-const MODEL_CASCADE = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'];
+const MODEL_CASCADE = [
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+  'gemini-2.5-flash-lite',
+  'gemini-3.8-flash',
+];
 
 async function callGemini(
   apiKey: string,
@@ -50,53 +55,60 @@ async function callGemini(
   systemInstruction: string,
   userPrompt: string
 ): Promise<string | null> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const runAttempt = async (useJsonMime: boolean): Promise<string | null> => {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 9000);
 
-      const generationConfig: Record<string, unknown> = {
-        temperature: 0.7,
-        maxOutputTokens: 2048,
-      };
-      if (useJsonMime) {
-        generationConfig.responseMimeType = 'application/json';
-      }
+    const combinedPrompt = systemInstruction.trim()
+      ? `${systemInstruction.trim()}\n\n---\n\n${userPrompt.trim()}`
+      : userPrompt.trim();
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: combinedPrompt }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 2048,
         },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemInstruction }] },
-          contents: [{ parts: [{ text: userPrompt }] }],
-          generationConfig,
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        // If 400 with JSON mime, retry once without JSON mime constraint
-        if (useJsonMime && response.status === 400) {
-          return runAttempt(false);
-        }
-        return null;
-      }
-
-      const data = await response.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      return typeof text === 'string' && text.trim().length > 0 ? text : null;
-    } catch {
+    if (!response.ok) {
       return null;
     }
-  };
 
-  return runAttempt(true);
+    const data = await response.json();
+    const parts = data?.candidates?.[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      const nonThought = parts
+        .filter((p: any) => p && typeof p.text === 'string' && !p.thought)
+        .map((p: any) => p.text)
+        .join('\n');
+      const allText = parts
+        .filter((p: any) => p && typeof p.text === 'string')
+        .map((p: any) => p.text)
+        .join('\n');
+      const text = nonThought.trim().length > 0 ? nonThought : allText;
+      return text.trim().length > 0 ? text.trim() : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 async function callGeminiWithCascade(
@@ -312,8 +324,13 @@ export async function handleAIPlannerRequest(req: AIPlannerRequest): Promise<Fun
   const safePrompt = userPrompt ? sanitizeInput(userPrompt, 500) : '';
 
   // ── Determine AI engine mode ───────────────────────────────────────
-  const apiKey = typeof process !== 'undefined' ? (process.env?.GEMINI_API_KEY || '') : '';
-  const preferredModel = typeof process !== 'undefined' ? (process.env?.GEMINI_MODEL || 'gemini-3.8-flash') : 'gemini-3.8-flash';
+  const rawKey =
+    typeof process !== 'undefined'
+      ? process.env?.GEMINI_API_KEY || (globalThis as any).Netlify?.env?.get?.('GEMINI_API_KEY') || ''
+      : (globalThis as any).Netlify?.env?.get?.('GEMINI_API_KEY') || '';
+  const apiKey = rawKey.trim().replace(/^["']|["']$/g, '');
+  const preferredModel =
+    (typeof process !== 'undefined' ? process.env?.GEMINI_MODEL : undefined) || 'gemini-2.5-flash';
 
   // ── Route by action ────────────────────────────────────────────────
 
@@ -346,6 +363,7 @@ Notes: ${safeContext.customNotes || 'None'}`;
               source: 'netlify_serverless',
               aiMode: 'gemini_live',
               model: geminiResult.model,
+              modelUsed: geminiResult.model,
             });
           }
         } catch {
@@ -360,6 +378,7 @@ Notes: ${safeContext.customNotes || 'None'}`;
       ideas,
       source: 'netlify_serverless',
       aiMode: 'server_contextual_engine',
+      fallbackReason: apiKey ? 'gemini_cascade_exhausted' : 'missing_api_key',
     });
   }
 
@@ -431,6 +450,7 @@ Instruction: Provide a direct, complete, and engaging response to the User Promp
             source: 'netlify_serverless',
             aiMode: 'gemini_live',
             model: geminiResult.model,
+            modelUsed: geminiResult.model,
           });
         }
       }
@@ -442,6 +462,7 @@ Instruction: Provide a direct, complete, and engaging response to the User Promp
       ...result,
       source: 'netlify_serverless',
       aiMode: 'server_contextual_engine',
+      fallbackReason: apiKey ? 'gemini_cascade_exhausted' : 'missing_api_key',
     });
   }
 
