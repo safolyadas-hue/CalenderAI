@@ -145,8 +145,12 @@ export async function askAICoPilot(
   let reply = '';
   let suggestedActions: string[] = [];
 
-  // 1. Greetings & Introductory Help
-  if (/\b(hi|hello|hey|yo|greetings|good morning|good afternoon|good evening|who are you|help|what can you do)\b/i.test(lower)) {
+  // 1. Identity & Assistant Name Questions
+  if (/\b(who are (u|you)|what('s| is) (ur|your) name)\b/i.test(lower)) {
+    reply = `I'm **CalenderAI**, your AI Event Planning Architect! I help you plan weddings, birthdays, and community events—Right now I have "${context.title}" loaded (${context.guestCount} guests, ${context.currency} ${context.totalBudget.toLocaleString()}). Ask me to write a toast/haiku, cut your budget, plan the menu, or organize your timeline!`;
+    suggestedActions = ['Brainstorm creative themes', 'Optimize my budget', 'Write a custom toast or haiku'];
+  } else if (/\b(hi|hello|hey|yo|greetings|good morning|good afternoon|good evening|how are (u|you)|what can (u|you) do|help)\b/i.test(lower)) {
+    // 2. Greetings & Casual Help
     reply = `Hey there! 👋 I'm your CalenderAI Co-Pilot. Right now we're looking at "${context.title}" (${context.guestCount} guests, ${context.currency} ${context.totalBudget.toLocaleString()}). Tell me what you'd like to do—we can brainstorm creative themes, trim the budget, write speeches/haikus, or check your vendor checklist!`;
     suggestedActions = ['Brainstorm creative themes', 'Optimize my budget', 'Write a custom toast or haiku'];
   } else if (/\b(haiku|poem|poetry|rhyme|toast|speech|joke|slogan|invite|invitation|song|vow|vows)\b/i.test(lower)) {
@@ -206,8 +210,8 @@ export async function askAICoPilot(
     reply = `Your plan for "${context.title}" currently has an efficiency score of ${planSummary.efficiencyScore}/100 with ${planSummary.daysUntilEvent} days until the event date. Key factors boosting your score include balanced budget distribution and complete vendor coverage.`;
     suggestedActions = ['Optimize Budget by 10%', 'Review Milestone Timeline', 'Check Checklist Completion'];
   } else {
-    // 9. Any Other Custom Question — Contextual tailored paragraph
-    reply = `Great question regarding "${cleanPrompt.slice(0, 60)}" for your upcoming ${context.eventType} ("${context.title}")!\nFor a ${context.setting} event with ${context.guestCount} guests and a budget of ${context.currency} ${context.totalBudget.toLocaleString()}, the key is balancing memorable guest experiences with tight vendor coordination. Let me know if you would like me to draft a specific checklist item, calculate itemized cost estimates, or generate tailored timeline milestones for this!`;
+    // 10. Open-Ended Fallback — Practical, direct event architecture advice (never generic/repetitive template)
+    reply = `For "${context.title}", the recommended strategy is prioritizing your highest-impact elements—Venue, Catering, and Sound/AV—before locking secondary details. With ${context.guestCount} guests in a ${context.setting} setting, ensure adequate load-in buffers, keep contract cancellation terms explicit, and protect an 8-10% contingency reserve for day-of coordination. Let me know if you would like me to draft specific vendor questions, recommend budget optimizations, or adjust milestone timelines!`;
     suggestedActions = ['Explore Personalized Ideas', 'Review Budget Allocation', 'Ask Another Question'];
   }
 

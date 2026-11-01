@@ -321,15 +321,17 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
       expect(callCount).toBeGreaterThanOrEqual(2);
     });
 
-    it('filters out thinking model thought chunks and extracts final answer', async () => {
+    it('filters out thinking model thought chunks and extracts final answer with header-only API key and gemini-3.8-flash', async () => {
       globalThis.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-        // Verify API key passed in both query param and header
-        expect(url).toContain('?key=test-fake-gemini-key-123');
+        // Verify API key passed ONLY in header, never in URL
+        expect(url).not.toContain('?key=');
+        expect(url).toContain('/v1beta/models/gemini-3.8-flash:generateContent');
         expect((init?.headers as Record<string, string>)?.['x-goog-api-key']).toBe('test-fake-gemini-key-123');
 
-        // Verify request payload uses pure universal contents structure without system_instruction
+        // Verify request payload uses pure universal contents structure without system_instruction or temperature
         const parsedBody = JSON.parse(String(init?.body || '{}'));
         expect(parsedBody.contents).toBeDefined();
+        expect(parsedBody.contents[0].role).toBe('user');
         expect(parsedBody.contents[0].parts).toBeDefined();
         expect(parsedBody.system_instruction).toBeUndefined();
         expect(parsedBody.generationConfig).toBeUndefined();
@@ -377,16 +379,17 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body.aiMode).toBe('gemini_live');
-      expect(body.modelUsed).toBeDefined();
+      expect(body.modelUsed).toBe('gemini-3.8-flash');
       expect(body.reply).toBe('Here is the final expert advice after internal reasoning.');
       expect(body.suggestedActions).toContain('Action 1');
       expect(body.diagnostics).toBeDefined();
       expect(body.diagnostics.hasApiKey).toBe(true);
       expect(body.diagnostics.keyLength).toBeGreaterThan(0);
+      expect(body.diagnostics.keyPrefix).toBe('test***');
       expect(body.diagnostics.upstreamError).toBeNull();
     });
 
-    it('returns fallbackReason and upstream error diagnostics when all models fail', async () => {
+    it('returns fallbackReason and upstream error diagnostics when gemini-3.8-flash and 3.5 cascade fails', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: false,
         status: 503,
@@ -410,7 +413,8 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
       expect(body.fallbackReason).toBe('gemini_cascade_exhausted');
       expect(body.diagnostics).toBeDefined();
       expect(body.diagnostics.hasApiKey).toBe(true);
-      expect(body.diagnostics.modelTried).toBe('gemini-1.5-flash');
+      expect(body.diagnostics.modelTried).toBe('gemini-3.5-flash-lite');
+      expect(body.diagnostics.keyPrefix).toBe('test***');
       expect(body.diagnostics.upstreamError).toContain('HTTP 503');
       expect(body.reply).toBeDefined();
     });
@@ -439,7 +443,58 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
       expect(body.aiMode).toBe('server_contextual_engine');
       expect(body.reply).toContain('Hey there! 👋 I\'m your CalenderAI Co-Pilot');
       expect(body.reply).not.toContain('CalenderAI Server Assistant: Your plan for');
+      expect(body.reply).not.toContain('Great question regarding');
       expect(body.suggestedActions).toContain('Brainstorm creative themes');
+    });
+
+    it('conversational responder answers identity questions ("who are you") with proper persona introduction', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        text: async () => 'Model not found',
+      } as unknown as Response);
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_WEDDING,
+          userPrompt: 'who are you',
+        }),
+        clientIp: '10.0.1.61',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('server_contextual_engine');
+      expect(body.reply).toContain("I'm **CalenderAI**, your AI Event Planning Architect!");
+      expect(body.reply).not.toContain('Great question regarding');
+    });
+
+    it('conversational responder never returns "Great question regarding..." for open-ended queries', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Error',
+        text: async () => 'Internal error',
+      } as unknown as Response);
+
+      const res = await handleAIPlannerRequest({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'copilot_query',
+          context: PRESET_WEDDING,
+          userPrompt: 'Tell me something interesting about seating arrangements',
+        }),
+        clientIp: '10.0.1.62',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.aiMode).toBe('server_contextual_engine');
+      expect(body.reply).not.toContain('Great question regarding');
+      expect(body.reply).toContain('recommended strategy');
     });
 
     it('conversational responder generates actual haiku for creative requests on fallback', async () => {
@@ -465,6 +520,7 @@ describe('Netlify Serverless Backend (handleAIPlannerRequest)', () => {
       expect(body.aiMode).toBe('server_contextual_engine');
       expect(body.reply.split('\n')).toHaveLength(3);
       expect(body.reply).not.toContain('efficiency score');
+      expect(body.reply).not.toContain('Great question regarding');
     });
   });
 });

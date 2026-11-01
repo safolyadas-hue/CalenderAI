@@ -43,9 +43,8 @@ function getIpLimiter(ip: string): RateLimiter {
 // ─── Free-Tier Gemini Model Cascade ────────────────────────────────────
 
 const MODEL_CASCADE = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-1.5-flash',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
 ];
 
 async function callGemini(
@@ -53,21 +52,25 @@ async function callGemini(
   model: string,
   fullPromptString: string
 ): Promise<{ text: string | null; error: string | null }> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  // Primary endpoint: generateContent (key passed ONLY in header, never in URL)
+  const generateUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': apiKey,
+  };
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 9000);
 
-    const response = await fetch(url, {
+    const response = await fetch(generateUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
+      headers,
       body: JSON.stringify({
         contents: [
           {
+            role: 'user',
             parts: [{ text: fullPromptString }],
           },
         ],
@@ -76,34 +79,67 @@ async function callGemini(
     });
     clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      let errText = '';
-      try {
-        errText = await response.text();
-      } catch {
-        // ignore
+    if (response.ok) {
+      const data = await response.json();
+      const parts = data?.candidates?.[0]?.content?.parts;
+      if (Array.isArray(parts)) {
+        const nonThought = parts
+          .filter((p: any) => p && typeof p.text === 'string' && !p.thought)
+          .map((p: any) => p.text)
+          .join('\n');
+        const allText = parts
+          .filter((p: any) => p && typeof p.text === 'string')
+          .map((p: any) => p.text)
+          .join('\n');
+        const text = nonThought.trim().length > 0 ? nonThought : allText;
+        if (text.trim().length > 0) {
+          return { text: text.trim(), error: null };
+        }
       }
-      const shortErr = errText ? errText.slice(0, 150) : response.statusText;
-      return { text: null, error: `HTTP ${response.status}: ${shortErr}` };
     }
 
-    const data = await response.json();
-    const parts = data?.candidates?.[0]?.content?.parts;
-    if (Array.isArray(parts)) {
-      const nonThought = parts
-        .filter((p: any) => p && typeof p.text === 'string' && !p.thought)
-        .map((p: any) => p.text)
-        .join('\n');
-      const allText = parts
-        .filter((p: any) => p && typeof p.text === 'string')
-        .map((p: any) => p.text)
-        .join('\n');
-      const text = nonThought.trim().length > 0 ? nonThought : allText;
-      if (text.trim().length > 0) {
-        return { text: text.trim(), error: null };
+    // If HTTP 400 or 404, attempt the Gemini 3.8 Interactions endpoint
+    if (response.status === 400 || response.status === 404) {
+      try {
+        const interactController = new AbortController();
+        const interactTimeout = setTimeout(() => interactController.abort(), 9000);
+
+        const interactUrl = 'https://generativelanguage.googleapis.com/v1beta/interactions';
+        const interactRes = await fetch(interactUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model,
+            input: fullPromptString,
+          }),
+          signal: interactController.signal,
+        });
+        clearTimeout(interactTimeout);
+
+        if (interactRes.ok) {
+          const interactData = await interactRes.json();
+          const textCandidate =
+            interactData?.output ||
+            interactData?.text ||
+            interactData?.response?.parts?.[0]?.text ||
+            interactData?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (typeof textCandidate === 'string' && textCandidate.trim().length > 0) {
+            return { text: textCandidate.trim(), error: null };
+          }
+        }
+      } catch {
+        // Fall through to standard error reporting
       }
     }
-    return { text: null, error: 'Empty parts returned by Gemini' };
+
+    let errText = '';
+    try {
+      errText = await response.text();
+    } catch {
+      // ignore
+    }
+    const shortErr = errText ? errText.slice(0, 150) : response.statusText;
+    return { text: null, error: `HTTP ${response.status}: ${shortErr}` };
   } catch (err: any) {
     const msg = err instanceof Error ? err.message : String(err);
     return { text: null, error: msg || 'Network error or timeout' };
@@ -178,15 +214,23 @@ function generateServerCopilotReply(
   const score = planSummary?.efficiencyScore ?? 75;
   const daysLeft = planSummary?.daysUntilEvent ?? 90;
 
-  // 1. Greetings & Introductory Help
-  if (/\b(hi|hello|hey|yo|greetings|good morning|good afternoon|good evening|who are you|help|what can you do)\b/i.test(lower)) {
+  // 1. Identity & Assistant Name Questions
+  if (/\b(who are (u|you)|what('s| is) (ur|your) name)\b/i.test(lower)) {
+    return {
+      reply: `I'm **CalenderAI**, your AI Event Planning Architect! I help you plan weddings, birthdays, and community events—Right now I have "${context.title}" loaded (${context.guestCount} guests, ${context.currency} ${context.totalBudget.toLocaleString()}). Ask me to write a toast/haiku, cut your budget, plan the menu, or organize your timeline!`,
+      suggestedActions: ['Brainstorm creative themes', 'Optimize my budget', 'Write a custom toast or haiku'],
+    };
+  }
+
+  // 2. Greetings & Casual Help
+  if (/\b(hi|hello|hey|yo|greetings|good morning|good afternoon|good evening|how are (u|you)|what can (u|you) do|help)\b/i.test(lower)) {
     return {
       reply: `Hey there! 👋 I'm your CalenderAI Co-Pilot. Right now we're looking at "${context.title}" (${context.guestCount} guests, ${context.currency} ${context.totalBudget.toLocaleString()}). Tell me what you'd like to do—we can brainstorm creative themes, trim the budget, write speeches/haikus, or check your vendor checklist!`,
       suggestedActions: ['Brainstorm creative themes', 'Optimize my budget', 'Write a custom toast or haiku'],
     };
   }
 
-  // 2. Creative Requests (haiku, poem, joke, toast, speech, slogan, invite, song)
+  // 3. Creative Requests (haiku, poem, joke, toast, speech, slogan, invite, song)
   if (/\b(haiku|poem|poetry|rhyme|toast|speech|joke|slogan|invite|invitation|song|vow|vows)\b/i.test(lower)) {
     if (lower.includes('haiku')) {
       let haikuText = '';
@@ -230,7 +274,7 @@ function generateServerCopilotReply(
     };
   }
 
-  // 3. Budget / Cost / Save / Cheap / Expensive
+  // 4. Budget / Cost / Save / Cheap / Expensive
   if (/\b(budget|cost|costs|save|saving|cut|cheap|expensive|price|discount|optimize)\b/i.test(lower)) {
     const perGuest = Math.round(context.totalBudget / Math.max(context.guestCount, 1));
     return {
@@ -239,7 +283,7 @@ function generateServerCopilotReply(
     };
   }
 
-  // 4. Catering / Food / Menu / Drinks
+  // 5. Catering / Food / Menu / Drinks
   if (/\b(diet|food|menu|catering|drinks|drink|beverage|bar|cocktail|mocktail|plate|tasting)\b/i.test(lower)) {
     const perPlate = Math.round((context.totalBudget * 0.35) / Math.max(context.guestCount, 1));
     const diets = context.dietaryPreferences.length > 0 ? context.dietaryPreferences.join(', ') : 'standard';
@@ -249,7 +293,7 @@ function generateServerCopilotReply(
     };
   }
 
-  // 5. Decor / Theme / Vibe / Music / Entertainment
+  // 6. Decor / Theme / Vibe / Music / Entertainment
   if (/\b(decor|theme|vibe|music|dj|entertainment|lighting|flowers|floral|sound|ambiance|stage)\b/i.test(lower)) {
     return {
       reply: `Decor & Entertainment recommendations for your ${context.setting} ${context.culturalTheme || 'celebratory'} theme:\n1. Use warm architectural uplighting and kinetic fairy lights—they transform the venue at 1/3 the cost of fresh cut florals.\n2. Curate a 3-stage sound journey: acoustic background during guest arrival, curated playlist through dinner, and high-energy live performance/DJ for the finale.\n3. Incorporate sustainable potted greenery and regional decorative motifs that guests can take home as eco-friendly favors.`,
@@ -257,7 +301,7 @@ function generateServerCopilotReply(
     };
   }
 
-  // 6. Timeline / Urgent / Next Steps / Schedule
+  // 7. Timeline / Urgent / Next Steps / Schedule
   if (/\b(timeline|urgent|next step|schedule|date|when|milestone|deadline)\b/i.test(lower)) {
     if (daysLeft < 30) {
       return {
@@ -271,7 +315,7 @@ function generateServerCopilotReply(
     };
   }
 
-  // 7. Venue / Weather / Contracts
+  // 8. Venue / Weather / Contracts
   if (/\b(weather|rain|wind|outdoor|marquee|shelter|contract|vendor)\b/i.test(lower)) {
     return {
       reply: `For your ${context.setting} setting and vendor contracts:\n1. Ensure the venue contract includes an explicit waterproof marquee rollover clause with a 48-hour call time.\n2. Verify dual-generator power backup for sound and lighting in case of grid outage.\n3. Confirm explicit cancellation, date-rescheduling, and force-majeure refund percentages across all contracts.`,
@@ -279,7 +323,7 @@ function generateServerCopilotReply(
     };
   }
 
-  // 8. Specific Efficiency Score query
+  // 9. Specific Efficiency Score query
   if (/\b(score|efficiency|feasibility)\b/i.test(lower)) {
     return {
       reply: `Your plan for "${context.title}" currently has an efficiency score of ${score}/100 with ${daysLeft} days until the event date. Key factors boosting your score include balanced budget distribution and complete vendor coverage.`,
@@ -287,9 +331,9 @@ function generateServerCopilotReply(
     };
   }
 
-  // 9. Any Other Custom Question — Contextual and tailored conversational paragraph
+  // 10. Open-Ended Fallback — Practical, direct event architecture advice (never generic/repetitive template)
   return {
-    reply: `Great question regarding "${userPrompt.slice(0, 60)}" for your upcoming ${context.eventType} ("${context.title}")!\nFor a ${context.setting} event with ${context.guestCount} guests and a budget of ${context.currency} ${context.totalBudget.toLocaleString()}, the key is balancing memorable guest experiences with tight vendor coordination. Let me know if you would like me to draft a specific checklist item, calculate itemized cost estimates, or generate tailored timeline milestones for this!`,
+    reply: `For "${context.title}", the recommended strategy is prioritizing your highest-impact elements—Venue, Catering, and Sound/AV—before locking secondary details. With ${context.guestCount} guests in a ${context.setting} setting, ensure adequate load-in buffers, keep contract cancellation terms explicit, and protect an 8-10% contingency reserve for day-of coordination. Let me know if you would like me to draft specific vendor questions, recommend budget optimizations, or adjust milestone timelines!`,
     suggestedActions: ['Explore Personalized Ideas', 'Review Budget Allocation', 'Ask Another Question'],
   };
 }
@@ -412,9 +456,12 @@ export async function handleAIPlannerRequest(req: AIPlannerRequest): Promise<Fun
     (globalThis as any).Netlify?.env?.get?.('GEMINI_API_KEY') ||
     (globalThis as any).Netlify?.env?.get?.('VITE_GEMINI_API_KEY') ||
     '';
-  const apiKey = rawKey.trim().replace(/^["']|["']$/g, '');
+  const apiKey = rawKey
+    .replace(/^GEMINI_API_KEY\s*=\s*/i, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
   const preferredModel =
-    (typeof process !== 'undefined' ? process.env?.GEMINI_MODEL : undefined) || 'gemini-2.5-flash';
+    (typeof process !== 'undefined' ? process.env?.GEMINI_MODEL : undefined) || 'gemini-3.8-flash';
 
   let lastModelTried = 'none';
   let lastError: string | null = null;
@@ -458,6 +505,7 @@ Notes: ${safeContext.customNotes || 'None'}`;
               diagnostics: {
                 hasApiKey: Boolean(apiKey),
                 keyLength: apiKey.length,
+                keyPrefix: apiKey ? apiKey.slice(0, 4) + '***' : null,
                 modelTried: lastModelTried,
                 upstreamError: null,
               },
@@ -479,6 +527,7 @@ Notes: ${safeContext.customNotes || 'None'}`;
       diagnostics: {
         hasApiKey: Boolean(apiKey),
         keyLength: apiKey.length,
+        keyPrefix: apiKey ? apiKey.slice(0, 4) + '***' : null,
         modelTried: lastModelTried,
         upstreamError: lastError || (apiKey ? 'Cascade exhausted' : 'API key not configured'),
       },
@@ -561,6 +610,7 @@ Instruction: Provide a direct, complete, and engaging response to the User Promp
             diagnostics: {
               hasApiKey: Boolean(apiKey),
               keyLength: apiKey.length,
+              keyPrefix: apiKey ? apiKey.slice(0, 4) + '***' : null,
               modelTried: lastModelTried,
               upstreamError: null,
             },
@@ -579,6 +629,7 @@ Instruction: Provide a direct, complete, and engaging response to the User Promp
       diagnostics: {
         hasApiKey: Boolean(apiKey),
         keyLength: apiKey.length,
+        keyPrefix: apiKey ? apiKey.slice(0, 4) + '***' : null,
         modelTried: lastModelTried,
         upstreamError: lastError || (apiKey ? 'Cascade exhausted' : 'API key not configured'),
       },
