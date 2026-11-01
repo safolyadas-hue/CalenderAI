@@ -10,6 +10,9 @@ const clientRateLimiter = new RateLimiter(12, 0.2);
 const ideasCache = new LRUCache<string, { ideas: PersonalizedIdea[]; source: EngineSource }>(30, 10 * 60 * 1000);
 const copilotCache = new LRUCache<string, { reply: string; suggestedActions: string[]; source: EngineSource }>(30, 10 * 60 * 1000);
 
+// In-flight request deduplication map to prevent simultaneous duplicate fetches on mount
+const inFlightRequests = new Map<string, Promise<any>>();
+
 export type EngineSource = 'netlify_serverless' | 'local_context_engine';
 
 /**
@@ -25,36 +28,54 @@ export async function requestPersonalizedIdeas(
     return cached;
   }
 
-  // Attempt remote Netlify function if available
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-    const response = await fetch('/api/ai-planner', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'generate_ideas', context }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = await response.json();
-      if (Array.isArray(data.ideas) && data.ideas.length > 0) {
-        const result = { ideas: data.ideas as PersonalizedIdea[], source: 'netlify_serverless' as const };
-        ideasCache.set(cacheKey, result);
-        return result;
-      }
-    }
-  } catch {
-    // Network error or timeout, seamlessly proceed to fallback
+  // Deduplicate simultaneous identical requests in-flight
+  const existing = inFlightRequests.get(cacheKey);
+  if (existing) {
+    return existing;
   }
 
-  // Fallback to local deterministic decision engine
-  const localIdeas = generateContextualIdeas(context);
-  const result = { ideas: localIdeas, source: 'local_context_engine' as const };
-  ideasCache.set(cacheKey, result);
-  return result;
+  const fetchPromise = (async () => {
+    // Attempt remote Netlify function if available
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+      try {
+        const response = await fetch('/api/ai-planner', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'generate_ideas', context }),
+          signal: controller.signal,
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data.ideas) && data.ideas.length > 0) {
+            const result = { ideas: data.ideas as PersonalizedIdea[], source: 'netlify_serverless' as const };
+            ideasCache.set(cacheKey, result);
+            return result;
+          }
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch {
+      // Network error or timeout, seamlessly proceed to fallback
+    }
+
+    // Fallback to local deterministic decision engine
+    const localIdeas = generateContextualIdeas(context);
+    const result = { ideas: localIdeas, source: 'local_context_engine' as const };
+    ideasCache.set(cacheKey, result);
+    return result;
+  })();
+
+  inFlightRequests.set(cacheKey, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    inFlightRequests.delete(cacheKey);
+  }
 }
 
 /**
@@ -106,39 +127,50 @@ export async function askAICoPilot(
     return cached;
   }
 
-  // Step 4: Attempt Netlify Serverless API
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-    const response = await fetch('/api/ai-planner', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'copilot_query',
-        context,
-        userPrompt: cleanPrompt,
-        planSummary,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = await response.json();
-      if (data.reply) {
-        const result = {
-          reply: data.reply,
-          suggestedActions: data.suggestedActions || [],
-          source: 'netlify_serverless' as const,
-        };
-        copilotCache.set(cacheKey, result);
-        return result;
-      }
-    }
-  } catch {
-    // Proceed to deterministic fallback
+  // Deduplicate simultaneous identical copilot queries in-flight
+  const inFlightKey = `copilot_${cacheKey}`;
+  const existingCopilot = inFlightRequests.get(inFlightKey);
+  if (existingCopilot) {
+    return existingCopilot;
   }
+
+  const queryPromise = (async () => {
+    // Step 4: Attempt Netlify Serverless API (25s timeout)
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+      try {
+        const response = await fetch('/api/ai-planner', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'copilot_query',
+            context,
+            userPrompt: cleanPrompt,
+            planSummary,
+          }),
+          signal: controller.signal,
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.reply) {
+            const result = {
+              reply: data.reply,
+              suggestedActions: data.suggestedActions || [],
+              source: 'netlify_serverless' as const,
+            };
+            copilotCache.set(cacheKey, result);
+            return result;
+          }
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch {
+      // Proceed to deterministic fallback
+    }
 
   // Step 5: Smart Multi-Intent Local Fallback based on live context
   const lower = cleanPrompt.toLowerCase().trim();

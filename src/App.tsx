@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { EventContext, EventPlan, EventType, BudgetCategory, TimelineMilestone, VendorItem, PersonalizedIdea } from './types/event';
 import { PRESET_WEDDING, PRESET_BIRTHDAY, PRESET_COMMUNITY } from './data/presets';
 import {
@@ -59,8 +59,11 @@ export default function App() {
     setIdeas(generateContextualIdeas(context));
   }, [context.eventType, context.eventDate, context.totalBudget, context.cityTier, context.setting]);
 
-  // Auto-sync engine source badge with Netlify AI Serverless on mount
+  // Auto-sync engine source badge with Netlify AI Serverless on mount (run once, no duplicates)
+  const initialProbeDone = useRef(false);
   useEffect(() => {
+    if (initialProbeDone.current) return;
+    initialProbeDone.current = true;
     let isMounted = true;
     requestPersonalizedIdeas(context)
       .then((res) => {

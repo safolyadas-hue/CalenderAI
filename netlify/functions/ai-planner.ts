@@ -62,7 +62,7 @@ async function callGemini(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 9000);
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     const response = await fetch(generateUrl, {
       method: 'POST',
@@ -102,7 +102,7 @@ async function callGemini(
     if (response.status === 400 || response.status === 404) {
       try {
         const interactController = new AbortController();
-        const interactTimeout = setTimeout(() => interactController.abort(), 9000);
+        const interactTimeout = setTimeout(() => interactController.abort(), 8000);
 
         const interactUrl = 'https://generativelanguage.googleapis.com/v1beta/interactions';
         const interactRes = await fetch(interactUrl, {
@@ -175,32 +175,12 @@ async function callGeminiWithCascade(
 
 // ─── System Instructions ───────────────────────────────────────────────
 
-const IDEAS_SYSTEM_INSTRUCTION = `You are CalenderAI, a professional event planning assistant specializing in weddings, birthdays, and community events.
+const IDEAS_SYSTEM_INSTRUCTION = `You are CalenderAI. Generate 6 event ideas as JSON: {"ideas": [{"id": "idea_1", "category": "Theme & Decor", "title": "...", "description": "...", "estimatedImpact": "...", "costTier": "low", "whyItFitsContext": "..."}]}. Return JSON only.`;
 
-Generate exactly 6 creative, context-specific event planning ideas as a JSON array.
-
-Each idea MUST have these fields:
-- "id": a unique string (e.g., "idea_1")
-- "category": one of "Theme & Decor", "Food & Beverage", "Guest Experience", "Sustainability & Cost-Saving"
-- "title": short creative title
-- "description": 2-3 sentence detailed description
-- "estimatedImpact": 1 sentence on expected guest/planning impact
-- "costTier": "low", "medium", or "high"
-- "whyItFitsContext": 1 sentence explaining why this idea fits the user's specific event context
-
-Respond ONLY with a JSON object: {"ideas": [...]}`;
-
-const COPILOT_SYSTEM_INSTRUCTION = `You are CalenderAI Co-Pilot, an expert AI event planning assistant and creative advisor.
-You help organize weddings, birthdays, community milestones, budgets, timelines, vendor contracts, as well as creative and general requests (including writing haikus, poems, toasts, speeches, greetings, theme concepts, jokes, or invitations).
-
-Directly and creatively answer the user's prompt:
-- If the user asks a creative question (e.g., write a haiku, poem, toast, speech, greeting, or joke), fulfill the creative request completely with high flair, incorporating their event context when appropriate.
-- If the user asks a strategic or logistical planning question, provide actionable advice tailored to their exact budget, guest count, event type, setting, and timeline.
-
-Your response MUST be in JSON format:
+const COPILOT_SYSTEM_INSTRUCTION = `You are CalenderAI Co-Pilot. Answer the user prompt directly, warmly, and helpfully in JSON:
 {
-  "reply": "Your complete, beautifully formatted response (support markdown formatting, verses, bullet points, etc.)",
-  "suggestedActions": ["3 short, relevant follow-up actions or questions"]
+  "reply": "Your markdown-formatted response",
+  "suggestedActions": ["3 short, relevant follow-up actions"]
 }`;
 
 // ─── Server-Side Contextual CoPilot Fallback ──────────────────────────
@@ -471,16 +451,7 @@ export async function handleAIPlannerRequest(req: AIPlannerRequest): Promise<Fun
   if (action === 'generate_ideas') {
     // Try Gemini first
     if (apiKey) {
-      const contextPrompt = `Generate 6 personalized event ideas for this event:
-Event Type: ${safeContext.eventType}
-Title: ${safeContext.title}
-Guest Count: ${safeContext.guestCount}
-Budget: ${safeContext.currency} ${safeContext.totalBudget}
-Setting: ${safeContext.setting}
-City Tier: ${safeContext.cityTier}
-Cultural Theme: ${safeContext.culturalTheme || 'Not specified'}
-Dietary Preferences: ${(safeContext.dietaryPreferences || []).join(', ') || 'None specified'}
-Notes: ${safeContext.customNotes || 'None'}`;
+      const contextPrompt = `Generate 6 event ideas for ${safeContext.eventType} "${safeContext.title}" (${safeContext.guestCount} guests, budget ${safeContext.currency} ${safeContext.totalBudget}, ${safeContext.setting}, theme: ${safeContext.culturalTheme || 'standard'}).`;
 
       const fullPrompt = `${IDEAS_SYSTEM_INSTRUCTION}\n\n---\n\n${contextPrompt}`;
       const geminiResult = await callGeminiWithCascade(apiKey, preferredModel, fullPrompt);
@@ -542,17 +513,7 @@ Notes: ${safeContext.customNotes || 'None'}`;
     // Try Gemini live model cascade if API key is provided
     if (apiKey) {
       const contextPrompt = `User Prompt: ${safePrompt}
-
-Event Context Reference:
-- Event Type: ${safeContext.eventType} — "${safeContext.title}"
-- Total Budget: ${safeContext.currency} ${safeContext.totalBudget} for ${safeContext.guestCount} guests
-- Venue Setting: ${safeContext.setting}, City Tier: ${safeContext.cityTier}
-- Cultural Theme: ${safeContext.culturalTheme || 'Not specified'}
-- Dietary Preferences: ${(safeContext.dietaryPreferences || []).join(', ') || 'None'}
-- Feasibility Score: ${planSummary?.efficiencyScore ?? 'N/A'}/100
-- Days Until Event: ${planSummary?.daysUntilEvent ?? 'N/A'}
-
-Instruction: Provide a direct, complete, and engaging response to the User Prompt above.`;
+Event: ${safeContext.eventType} "${safeContext.title}" (${safeContext.guestCount} guests, ${safeContext.currency} ${safeContext.totalBudget}, ${safeContext.setting}, theme: ${safeContext.culturalTheme || 'standard'}, days left: ${planSummary?.daysUntilEvent ?? 'N/A'}). Answer the user prompt directly.`;
 
       const fullPrompt = `${COPILOT_SYSTEM_INSTRUCTION}\n\n---\n\n${contextPrompt}`;
       const geminiResult = await callGeminiWithCascade(apiKey, preferredModel, fullPrompt);
